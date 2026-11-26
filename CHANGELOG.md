@@ -4,6 +4,12 @@ All notable changes to this plugin are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Tags are plain `x.y.z`, with no `v`.
 
+## [Unreleased]
+
+### Changed
+
+- A grid tile that leaves out a stored poster now logs why (a reason and size, never a name).
+
 ## [1.0.0] - 2026-11-26
 
 First release. Needs HolyArrs 1.3.2 or newer.

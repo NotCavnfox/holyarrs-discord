@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -333,6 +334,10 @@ func (f *Feature) refresh(ctx context.Context, force bool) error {
 // poster cannot be read or used, gets a cell with its name. failed counts the
 // reads that failed for a reason that may pass (not "no such picture" and not
 // "no permission"), so the caller can try again later.
+// errPosterTooBig is a poster over maxPosterBytes. It wraps core.ErrNotFound
+// so it is not read again: trying again will not help.
+var errPosterTooBig = fmt.Errorf("poster over the size cap: %w", core.ErrNotFound)
+
 func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) (jpg []byte, failed int, err error) {
 	if len(grid) > gridCells {
 		grid = grid[:gridCells]
@@ -367,7 +372,7 @@ func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) 
 			defer cancel()
 			data, _, err := f.d.HA.Thumbnail(c, ref)
 			if err == nil && len(data) > maxPosterBytes {
-				data, err = nil, core.ErrNotFound // too large to draw; trying again will not help
+				data, err = nil, errPosterTooBig // too large to draw; trying again will not help
 			}
 			got[ref].data, got[ref].err = data, err
 		}()
@@ -378,6 +383,7 @@ func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) 
 	}
 	cells := make([]postergrid.Cell, len(grid))
 	want, denied := 0, 0
+	why := map[string]int{} // why a stored poster was not drawn; reasons only, no names
 	for i, g := range grid {
 		cells[i].Title = g.Title
 		r := got[g.Artwork]
@@ -390,18 +396,35 @@ func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) 
 			cells[i].Poster = r.data
 		case errors.Is(r.err, core.ErrForbidden):
 			denied++
-		case !errors.Is(r.err, core.ErrNotFound):
+			why["not permitted"]++
+		case errors.Is(r.err, errPosterTooBig):
+			why["over the size cap"]++
+		case errors.Is(r.err, core.ErrNotFound):
+			why["not found"]++
+		default:
 			failed++
+			why["read failed"]++
 		}
 	}
-	jpg, drawn, err := postergrid.Compose(cells)
+	jpg, drawn, unusable, err := postergrid.ComposeDetail(cells)
 	if err != nil {
 		return nil, failed, err
+	}
+	for _, u := range unusable {
+		why[u]++
 	}
 	if denied > 0 {
 		f.d.Log.Warn("dashboard: posters need the library.artwork.read permission", "tile", key, "posters", denied)
 	}
 	f.d.Log.Info("dashboard: drew tile", "tile", key, "titles", len(grid), "stored", want, "drawn", drawn, "failed", failed, "bytes", len(jpg))
+	if len(why) > 0 {
+		reasons := make([]string, 0, len(why))
+		for r, n := range why {
+			reasons = append(reasons, fmt.Sprintf("%dx %s", n, r))
+		}
+		sort.Strings(reasons)
+		f.d.Log.Warn("dashboard: posters not drawn", "tile", key, "why", strings.Join(reasons, "; "))
+	}
 	return jpg, failed, nil
 }
 

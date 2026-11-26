@@ -10,8 +10,14 @@ reply can take a few days.
 1. For anything bigger than a small fix (a typo, a broken link, a one-line bug), open an issue
    first, or comment on one that exists. Say what you want to change and why.
 2. Work on a branch, never on `main`. Fork the repo if you can't push here.
-3. Open a pull request and link the issue (`Closes #12` or `Refs #12`).
-4. One fix or one feature per pull request. Small ones get merged faster.
+3. Open a pull request and link the issue (`Closes #12` or `Refs #12`). You don't need to wait
+   for a reply on the issue before opening it.
+4. Every issue and pull request is reviewed by hand before anything is merged. Nothing merges on
+   its own, and CI must be green.
+5. Keep the pull request small. One fix or one feature per pull request.
+
+Issues are for bugs, the goals listed in the README, and anything you plan to build. Questions
+about HolyArrs itself go to the [HolyArrs community](https://community.holyarrs.com).
 
 Security problems do not go in issues. See [SECURITY.md](SECURITY.md).
 
