@@ -1,0 +1,55 @@
+# Makes a GitHub Release when a version tag (x.y.z, no v) is pushed. The notes
+# are that version's section of CHANGELOG.md. Source only: HolyArrs builds the
+# plugin from source, so no binaries are attached.
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the tag
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Tag $TAG is not a plain x.y.z version."
+            exit 1
+          fi
+          version="$(jq -r '.version // empty' holyarrs-plugin.json)"
+          if [ -n "$version" ] && [ "$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match version $version in holyarrs-plugin.json."
+            exit 1
+          fi
+      - name: Take the notes from CHANGELOG.md
+        run: |
+          awk -v tag="$TAG" '
+            index($0, "## [" tag "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found && /^\[[^]]+\]: / { next }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has no section for $TAG."
+            exit 1
+          fi
+          if grep -Fq "## [$TAG] - Unreleased" CHANGELOG.md; then
+            echo "CHANGELOG.md still says Unreleased for $TAG. Put the date in first."
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

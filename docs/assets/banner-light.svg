@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" width="1280" height="320" role="img" aria-label="HolyArrs Discord plugin: your library, requests and ready pings in Discord">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef0ff"/>
+      <stop offset="1" stop-color="#d9dcff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="320" rx="28" fill="url(#bg)"/>
+  <g transform="translate(96 72) scale(0.6875)">
+    <rect width="256" height="256" rx="56" fill="#3b3f8f"/>
+    <path d="M64 60h128a24 24 0 0 1 24 24v72a24 24 0 0 1-24 24h-60l-40 34v-34H64a24 24 0 0 1-24-24V84a24 24 0 0 1 24-24z" fill="#ffffff"/>
+    <path d="M112 92v56l48-28z" fill="#3b3f8f"/>
+  </g>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="320" y="148" font-size="64" font-weight="700" fill="#14162e">HolyArrs Discord plugin</text>
+    <text x="322" y="200" font-size="28" fill="#3b3f8f">Your library, requests and ready pings, in your Discord server.</text>
+    <g font-size="20" font-weight="600">
+      <rect x="320" y="228" width="118" height="38" rx="19" fill="#ffffff"/><text x="379" y="254" text-anchor="middle" fill="#3b3f8f">/link</text>
+      <rect x="450" y="228" width="140" height="38" rx="19" fill="#ffffff"/><text x="520" y="254" text-anchor="middle" fill="#3b3f8f">/request</text>
+      <rect x="602" y="228" width="128" height="38" rx="19" fill="#ffffff"/><text x="666" y="254" text-anchor="middle" fill="#3b3f8f">/status</text>
+      <rect x="742" y="228" width="172" height="38" rx="19" fill="#ffffff"/><text x="828" y="254" text-anchor="middle" fill="#3b3f8f">poster tiles</text>
+      <rect x="926" y="228" width="170" height="38" rx="19" fill="#ffffff"/><text x="1011" y="254" text-anchor="middle" fill="#3b3f8f">ready pings</text>
+    </g>
+  </g>
+</svg>
