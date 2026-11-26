@@ -442,12 +442,24 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	mux.HandleFunc("GET /api/v1/titles/10", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":10,"kind":"movie","name":"Bare","artwork":[]}`))
 	})
+	artCalls := 0
 	mux.HandleFunc("GET /api/v1/artwork/{name}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("name") != "p 9.jpg" || r.URL.Query().Get("size") != "500" {
-			t.Errorf("artwork %q size %q", r.PathValue("name"), r.URL.Query().Get("size"))
+		artCalls++
+		switch r.PathValue("name") {
+		case "p 9.jpg", "p9.jpg":
+			if r.URL.RawQuery != "" {
+				t.Errorf("artwork query %q", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("JPEGDATA"))
+		case "huge.jpg":
+			_, _ = w.Write(make([]byte, maxArtwork+1))
+		case "closed.jpg":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"this plugin was not given the library.artwork.read permission"}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write([]byte("JPEGDATA"))
 	})
 	c, _ := newTest(t, mux)
 	ctx := context.Background()
@@ -456,11 +468,11 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	if err != nil || len(got) != 3 {
 		t.Fatalf("recently added %v err %v", got, err)
 	}
-	if got[0].ID != 9 || got[0].Kind != core.KindShow || got[0].PosterURL != "" || got[0].Year != 2017 ||
+	if got[0].ID != 9 || got[0].Kind != core.KindShow || got[0].PosterURL != "" || got[0].Artwork != "/api/v1/artwork/p9.jpg" || got[0].Year != 2017 ||
 		!got[0].AddedAt.Equal(time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)) {
 		t.Errorf("first %+v", got[0])
 	}
-	if got[1].ID != 3 || got[1].PosterURL != "https://image.tmdb.org/t/p/w500/x.jpg" || got[2].Kind != core.KindAlbum || !got[2].AddedAt.IsZero() {
+	if got[1].ID != 3 || got[1].PosterURL != "https://image.tmdb.org/t/p/w500/x.jpg" || got[1].Artwork != "" || got[2].Kind != core.KindAlbum || !got[2].AddedAt.IsZero() {
 		t.Errorf("rest %+v %+v", got[1], got[2])
 	}
 	if got, _ := c.RecentlyAdded(ctx, 1); len(got) != 1 {
@@ -468,7 +480,7 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	}
 
 	ti, err := c.Title(ctx, 9)
-	if err != nil || ti.Name != "Dark" || ti.Overview != "A town." || ti.PosterURL != "https://cdn.example/x.jpg" ||
+	if err != nil || ti.Name != "Dark" || ti.Overview != "A town." || ti.PosterURL != "https://cdn.example/x.jpg" || ti.Artwork != "/api/v1/artwork/p%209.jpg" ||
 		!ti.AddedAt.Equal(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("title %+v err %v", ti, err)
 	}
@@ -478,6 +490,32 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	}
 	if _, _, err := c.Poster(ctx, 10); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("no artwork: %v", err)
+	}
+
+	// Artwork reads a stored picture by the path a title carries.
+	data, ct, err = c.Artwork(ctx, got[0].Artwork)
+	if err != nil || string(data) != "JPEGDATA" || ct != "image/jpeg" {
+		t.Errorf("artwork %q %q %v", data, ct, err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/gone.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("missing picture: %v", err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/closed.jpg"); !errors.Is(err, core.ErrForbidden) {
+		t.Errorf("no permission: %v", err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/huge.jpg"); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("a picture over the cap: %v", err)
+	}
+	// Anything that is not a stored picture is refused without a call.
+	before := artCalls
+	for _, ref := range []string{"", "/api/v1/artwork/", "https://image.tmdb.org/t/p/w500/x.jpg", "/api/v1/titles/9",
+		"/api/v1/artwork/../titles/9", "/api/v1/artwork/a.jpg?size=250", "/api/v1/artwork/a b.jpg"} {
+		if _, _, err := c.Artwork(ctx, ref); !errors.Is(err, core.ErrNotFound) {
+			t.Errorf("ref %q: %v", ref, err)
+		}
+	}
+	if artCalls != before {
+		t.Errorf("%d calls for refs that are not stored pictures", artCalls-before)
 	}
 }
 
@@ -585,7 +623,7 @@ func TestUpcoming(t *testing.T) {
 	if items[1].Label != "S02E06" || items[2].Label != "Hey What" || items[2].Title.Kind != core.KindAlbum {
 		t.Errorf("middle %+v %+v", items[1], items[2])
 	}
-	if items[3].Title.Name != "Dune" || items[3].Label != "" || items[3].Title.Kind != core.KindMovie || items[3].Title.PosterURL != "" || items[3].Title.Year != 2021 {
+	if items[3].Title.Name != "Dune" || items[3].Label != "" || items[3].Title.Kind != core.KindMovie || items[3].Title.PosterURL != "" || items[3].Title.Artwork != "/api/v1/artwork/d.jpg" || items[3].Title.Year != 2021 {
 		t.Errorf("movie %+v", items[3])
 	}
 }

@@ -25,6 +25,9 @@ type fakeHA struct {
 	poster      []byte
 	posterType  string
 	posterErr   error
+	art         map[string][]byte // Artwork, by ref
+	artErr      map[string]error
+	artAsked    []string
 	people      []core.PersonWatch
 	peopleErr   error
 	watched     []core.WatchedTitle
@@ -83,6 +86,20 @@ func (h *fakeHA) Poster(context.Context, core.TitleID) ([]byte, string, error) {
 	defer h.mu.Unlock()
 	h.hit("poster")
 	return h.poster, h.posterType, h.posterErr
+}
+func (h *fakeHA) Artwork(_ context.Context, ref string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hit("artwork")
+	h.artAsked = append(h.artAsked, ref)
+	if err := h.artErr[ref]; err != nil {
+		return nil, "", err
+	}
+	data, ok := h.art[ref]
+	if !ok {
+		return nil, "", core.ErrNotFound
+	}
+	return data, "image/jpeg", nil
 }
 func (h *fakeHA) WatchPeople(context.Context) ([]core.PersonWatch, error) {
 	h.mu.Lock()

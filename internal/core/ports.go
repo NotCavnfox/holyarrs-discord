@@ -40,6 +40,10 @@ type HolyArrs interface {
 	Title(ctx context.Context, id TitleID) (Title, error)
 	// Poster returns the stored poster bytes and their content type.
 	Poster(ctx context.Context, id TitleID) (data []byte, contentType string, err error)
+	// Artwork returns the stored picture a Title.Artwork names: at most 5 MB
+	// of JPEG, PNG or WebP. ErrNotFound when there is no such picture,
+	// ErrForbidden without the library.artwork.read permission.
+	Artwork(ctx context.Context, ref string) (data []byte, contentType string, err error)
 	// WatchPeople returns per-person watch totals.
 	WatchPeople(ctx context.Context) ([]PersonWatch, error)
 	// RecentlyWatched returns titles by latest watch time, newest first.

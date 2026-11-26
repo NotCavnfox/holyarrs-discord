@@ -18,6 +18,7 @@ a port: it dials out to the Discord gateway and long-polls HolyArrs.
         | internal/holyarrs                 |                internal/discordgw |
         | HTTP client, hooks, events        |      discordgo gateway + REST    |
         +-----------------------------------+----------------------------------+
+                    internal/postergrid (pure: posters in, one JPEG out)
                     internal/store (JSON files)   internal/links (link book)
                     internal/config (env)         internal/app (bus, router, runner)
                                       main.go wires it all
@@ -26,8 +27,10 @@ a port: it dials out to the Discord gateway and long-polls HolyArrs.
 Rules:
 - `internal/core` imports only the standard library. Everything else imports `core`.
 - Features import `core` only: never `discordgo`, never the HolyArrs wire format, never each other.
+  The one exception is `internal/postergrid`, a pure helper (bytes in, JPEG out) the dashboard uses.
 - Adapters translate wire shapes to `core` types and wire errors to `core.Err*`.
 - Only `main.go` names concrete types. Only `internal/discordgw` imports `discordgo` or `gorilla/websocket`.
+  Only `internal/postergrid` imports `golang.org/x/image`.
 - A new feature is a new package under `internal/features/` plus one line in `main.go`.
 
 ## Packages
@@ -43,9 +46,10 @@ Rules:
 | `internal/selfcheck` | Read-only startup pass over the `HolyArrs` reads and the Discord probe; one log line per check, counts only |
 | `internal/app` | Event bus (fan-out, drop when slow), interaction router, feature runner, shutdown |
 | `internal/features/linking` | `/link`, `/unlink`, `/whoami`, `/link-admin`, the link reconcile loop, Linked role, the plugin page, the Home widget |
-| `internal/features/dashboard` | Self-updating tiles: one pinned message per tile, edited in place |
-| `internal/features/announce` | New-title posts; ready DMs to whoever asked for the title |
-| `internal/features/requests` | `/me`, `/request`, `/search`, `/privacy`; approved/declined DMs for bot-made requests |
+| `internal/postergrid` | Draws up to 9 posters as one 3x3 JPEG (900x1338); decodes JPEG, PNG and WebP, refuses oversized pictures, draws the title in a cell with no poster |
+| `internal/features/dashboard` | Self-updating tiles: one pinned message per tile, edited in place; the poster grids of Recently added and Coming up |
+| `internal/features/announce` | New-title posts; ready DMs to whoever asked for the title and has alerts on |
+| `internal/features/requests` | `/status`, `/request`, `/search`, `/privacy`; approved/declined DMs for bot-made requests |
 | `internal/features/vote` (1.1) | `/purge-vote`, ballots, admin confirm, audit log |
 | `internal/features/fun` (1.2) | recaps, leaderboards, movie night, games, roles |
 
@@ -64,15 +68,16 @@ Rules:
 
 | File | Owner | Holds |
 |---|---|---|
-| `links.json` | links | Discord id, HolyArrs user id and name, privacy flag |
+| `links.json` | links | Discord id, HolyArrs user id and name, privacy flag, `alerts_off` (written only when alerts are off, so older files read as on) |
 | `pending.json` | linking | Discord id and expiry of each code that is waiting to be typed (never the code) |
-| `tiles.json` | dashboard | message id per tile, last content hash |
+| `tiles.json` | dashboard | message id per tile, last content hash, poster retry count |
 | `announced.json` | announce | announced and pinged keys (dedupe across restarts) |
 | `myrequests.json` | requests | requests made through the bot, per member |
 | `votes.json` | vote | open and closed ballots |
 
 Everything is rebuildable. Links are rebuilt from HolyArrs on the next reconcile pass, but the
-privacy choice is then back to hidden; a lost tile file just makes new messages.
+privacy choice is then back to hidden and alerts back to on; a lost tile file just makes new
+messages.
 
 ## Linking
 
@@ -91,8 +96,9 @@ privacy choice.
    every 5 minutes otherwise. `/link` and `/unlink` wake it. Each pass:
    - A link in HolyArrs whose external id is not linked in the bot is adopted: the name comes
      from `Users` (the id as text if the user is not listed), the link is saved with the name
-     hidden from watch activity, the pending entry is dropped, the Linked role is given and the
-     member gets a DM. No pending entry is needed, because the external id can only come from a
+     hidden from watch activity and alerts on, the pending entry is dropped, the Linked role is
+     given and the member gets a DM. The DM says they will get a message each time one of their
+     requests is available and that `/privacy alerts:off` turns that off. No pending entry is needed, because the external id can only come from a
      code this plugin asked for. External ids that are not 15 to 21 digits are ignored.
    - HolyArrs keeps one link per user, so two users can hold the same Discord id. The bot keeps
      the one it already has, else the oldest (lowest user id on a tie), and calls `RemoveLink`
@@ -119,14 +125,35 @@ changes (checked after each reconcile pass and each `/unlink`); a failed publish
 doubling to 5 min) and never stops the feature. HolyArrs keeps the card until the plugin stops, so
 there is no keep-alive.
 
+## Poster-grid tiles
+
+Recently added and Coming up show the 9 newest titles and the next 9 releases as one picture,
+attached to the tile message and shown through the embed image (`attachment://added.jpg`,
+`attachment://upcoming.jpg`). The embed description is a numbered list in grid order (left to
+right, top to bottom), so the tile reads without the picture. An empty tile stays text only.
+
+1. The tile hash covers the text plus each cell's title id and poster reference. When it equals
+   the saved hash, nothing is read, drawn or uploaded.
+2. Otherwise each distinct stored poster is read once through `HolyArrs.Artwork`. A title with no
+   stored poster, a missing or oversized picture, or one that does not decode gets a dark cell
+   with its name. Cells past the last title stay empty.
+3. `postergrid.Compose` draws the JPEG (quality 85, well under 1 MB) and the message is edited in
+   place. The Discord adapter drops the old attachment on every edit, so there is always one.
+4. A read that failed for a reason that may pass (not "no such picture", not "no permission") is
+   tried again on the next refreshes, 3 draws in all, then left until the content changes.
+
 ## What HolyArrs does and does not give a plugin
 
 - Events arrive as JSON lines on stdin (`access.events`); stdin closing means stop.
 - Watch data: totals per person, and last-watched per title. Never who watched which title, and
   no now-playing. Hence the tiles: Recently added, Recently watched (titles only), Top watchers
   (opt-in names), Coming up.
-- Requests cannot be listed. The bot knows requests it made itself (`myrequests.json`) and can
-  ask who requested a library title (`AskedBy`), which drives ready pings.
+- Requests cannot be listed: `GET /asks` answers a plugin with an empty list and refuses
+  `X-Holyarrs-For-User` on reads. The bot knows requests it made itself (`myrequests.json`, kept
+  current from request events), which is what `/status` shows, and can ask who requested a
+  library title (`AskedBy`), which drives ready pings.
+- Stored posters can be read (`Artwork`, under `library.read`). A poster that is still an outside
+  link cannot: its host is not in `access.hosts`.
 - Pages are for the owner only. A Home widget (one card of plain text rows, links to HolyArrs
   pages only) is shown to every signed-in user; it is the only on-site way to reach members.
 - Exact wire shapes: `docs/holyarrs-api.md`.
@@ -136,12 +163,14 @@ there is no keep-alive.
 - HolyArrs: about 600 calls a minute, 8 at once. The client queues behind a semaphore and backs
   off on 429. Dashboard reads are cached per refresh so tiles share one fetch.
 - Discord: edits to tiles only when the rendered content hash changes.
-- 512 MiB, 1 CPU: no in-memory library copy; posters fetched on demand with a small LRU.
+- 512 MiB, 1 CPU: no in-memory library copy. Posters are read only when a grid tile changed, 3 at
+  a time, at most 5 MB each with a 20 s limit, and decoded one at a time (12 megapixels at most).
 - No UDP: no voice features.
 
 ## Privacy and safety
 
 - A person's name appears next to watch activity only when their link has `ShowWatching`.
+- The "available" DM goes to a linked person unless their link has `AlertsOff` (`/privacy alerts:off`).
 - Deletion (1.1) needs an admin button press in Discord for each run and is logged to the mod channel.
 - The bot token lives only in the secret setting; it is never written to disk or logs.
 - Text from HolyArrs and Discord is data. Titles are escaped before they go into messages.

@@ -227,6 +227,42 @@ func TestReadyDMs(t *testing.T) {
 	}
 }
 
+func TestReadyDMRespectsAlerts(t *testing.T) {
+	r := newRig(core.Config{EnableAnnounce: true})
+	r.ha.titles[7] = core.Title{ID: 7, Name: "Dune", Year: 2024}
+	r.ha.askedBy = map[core.TitleID][]core.UserID{7: {"u1", "u2"}}
+	_ = r.links.Put(core.Link{DiscordID: "d1", UserID: "u1", AlertsOff: true})
+	_ = r.links.Put(core.Link{DiscordID: "d2", UserID: "u2"}) // the default: alerts on
+	f := New(r.deps)
+	ctx := context.Background()
+	f.handle(ctx, core.Event{Type: core.EventRequestAvailable, TitleID: 7})
+	_, _, dms, _, _ := r.dc.snap()
+	if len(dms) != 1 || dms[0].Channel != "d2" {
+		t.Fatalf("dms = %+v, want one to d2", dms)
+	}
+	if f.seen[readyKey(7, "d1")] {
+		t.Error("a suppressed DM was marked as sent")
+	}
+
+	// Only members with alerts off: no title lookup and no DM at all.
+	r2 := newRig(core.Config{EnableAnnounce: true})
+	r2.ha.titles[7] = core.Title{ID: 7, Name: "Dune"}
+	r2.ha.askedBy = map[core.TitleID][]core.UserID{7: {"u1"}}
+	_ = r2.links.Put(core.Link{DiscordID: "d1", UserID: "u1", AlertsOff: true})
+	f2 := New(r2.deps)
+	f2.handle(ctx, core.Event{Type: core.EventTitleAdded, TitleID: 7})
+	if _, _, dms, _, _ := r2.dc.snap(); len(dms) != 0 || r2.ha.count("title") != 0 {
+		t.Fatalf("dms = %+v, title lookups = %d", dms, r2.ha.count("title"))
+	}
+
+	// Turning alerts back on lets the next event through.
+	_ = r2.links.Put(core.Link{DiscordID: "d1", UserID: "u1"})
+	f2.handle(ctx, core.Event{Type: core.EventRequestAvailable, TitleID: 7})
+	if _, _, dms, _, _ := r2.dc.snap(); len(dms) != 1 || dms[0].Channel != "d1" {
+		t.Fatalf("dms after turning alerts on = %+v", dms)
+	}
+}
+
 func TestReadyDMKeysAndRetries(t *testing.T) {
 	r := newRig(onCfg())
 	r.ha.titles[7] = core.Title{ID: 7, Name: "X"}

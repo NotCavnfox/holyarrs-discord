@@ -128,7 +128,7 @@ func TestPersistsAcrossReload(t *testing.T) {
 	b, st := newBook(t)
 	want := []core.Link{
 		{DiscordID: "1", UserID: "a", UserName: "Alice", ShowWatching: true, LinkedAt: t0},
-		{DiscordID: "2", UserID: "b", UserName: "Bob", LinkedAt: t0.Add(time.Hour)},
+		{DiscordID: "2", UserID: "b", UserName: "Bob", AlertsOff: true, LinkedAt: t0.Add(time.Hour)},
 	}
 	must(t, b.Put(want[1]))
 	must(t, b.Put(want[0]))
@@ -144,12 +144,44 @@ func TestPersistsAcrossReload(t *testing.T) {
 	for i := range want {
 		if got[i].DiscordID != want[i].DiscordID || got[i].UserID != want[i].UserID ||
 			got[i].UserName != want[i].UserName || got[i].ShowWatching != want[i].ShowWatching ||
-			!got[i].LinkedAt.Equal(want[i].LinkedAt) {
+			got[i].AlertsOff != want[i].AlertsOff || !got[i].LinkedAt.Equal(want[i].LinkedAt) {
 			t.Fatalf("link %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 	if l, ok := b2.ByUser("b"); !ok || l.DiscordID != "2" {
 		t.Fatalf("ByUser after reload = %+v %v", l, ok)
+	}
+}
+
+// A links.json written before the alerts choice existed has no such field:
+// those members have alerts on, and saving them again adds nothing.
+func TestAlertsDefaultOn(t *testing.T) {
+	st := coretest.NewFakeStore()
+	st.SetRaw(links.Document, []byte(`{"version":1,"links":[`+
+		`{"discord_id":"1","user_id":"a","user_name":"Alice","show_watching":true,"linked_at":"2026-01-02T03:04:05Z"}]}`))
+	b, err := links.New(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, ok := b.ByDiscord("1")
+	if !ok || l.AlertsOff || !l.ShowWatching {
+		t.Fatalf("old link = %+v %v, want alerts on", l, ok)
+	}
+	must(t, b.Put(l))
+	if raw, _ := st.Raw(links.Document); strings.Contains(string(raw), "alerts") {
+		t.Errorf("alerts on was written out: %s", raw)
+	}
+	l.AlertsOff = true
+	must(t, b.Put(l))
+	if raw, _ := st.Raw(links.Document); !strings.Contains(string(raw), `"alerts_off":true`) {
+		t.Errorf("alerts off was not saved: %s", raw)
+	}
+	b2, err := links.New(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := b2.ByDiscord("1"); !l.AlertsOff {
+		t.Error("alerts off did not survive a reload")
 	}
 }
 

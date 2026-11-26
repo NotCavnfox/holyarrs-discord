@@ -468,7 +468,8 @@ func (f *Feature) adopt(ctx context.Context, discordID string, r core.RemoteLink
 	}
 	f.d.Log.Info("linking: linked", "discord", discordID, "user", r.UserID)
 	f.dm(ctx, discordID, "You are now linked to HolyArrs as **"+escapeMarkdown(name)+
-		"**. Run /whoami to check, /privacy to choose whether your name shows next to what you watch, or /unlink to undo it.")
+		"**. Run /whoami to check, /privacy to choose whether your name shows next to what you watch, or /unlink to undo it.\n"+
+		"I will send you a message here each time one of your requests is available on the server. /privacy alerts:off turns that off.")
 }
 
 // older reports whether a should be kept over b: the earlier link, and the
@@ -753,7 +754,12 @@ func (f *Feature) handleWhoami(ctx context.Context, in *core.Interaction) error 
 		} else {
 			text += "Privacy: your name is hidden from watch activity."
 		}
-		return reply(text + " Change it with /privacy.")
+		if l.AlertsOff {
+			text += "\nAlerts: off. You get no message when a request of yours is available."
+		} else {
+			text += "\nAlerts: on. You get a message when a request of yours is available."
+		}
+		return reply(text + "\nChange either with /privacy.")
 	}
 	if err := f.load(); err != nil {
 		f.d.Log.Error("linking: /whoami", "err", err)

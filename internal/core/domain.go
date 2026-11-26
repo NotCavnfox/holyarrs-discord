@@ -45,6 +45,10 @@ type Title struct {
 	// source) that Discord can fetch by itself. Empty when there is none; then
 	// use HolyArrs.Poster and upload the bytes.
 	PosterURL string
+	// Artwork names the poster HolyArrs has stored for the title, for
+	// HolyArrs.Artwork. Empty when it has none. It is opaque and not a URL
+	// Discord could fetch.
+	Artwork string
 }
 
 // PersonWatch is the polled watch total for one media-server account.
@@ -151,7 +155,10 @@ type Link struct {
 	UserID       UserID
 	UserName     string
 	ShowWatching bool // opt-in: show this person's name next to what they watch
-	LinkedAt     time.Time
+	// AlertsOff is the opt-out from the DM sent when a title the person asked
+	// for is available. The zero value means alerts are on.
+	AlertsOff bool
+	LinkedAt  time.Time
 }
 
 // Config is everything the owner sets, read once at start. Saving settings

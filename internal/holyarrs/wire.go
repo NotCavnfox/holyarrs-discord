@@ -104,6 +104,25 @@ func firstPublic(list []string) string {
 	return ""
 }
 
+// storedArtwork keeps s only when it is one of HolyArrs' own stored pictures:
+// a plain /api/v1/artwork/<name> path.
+func storedArtwork(s string) string {
+	if !strings.HasPrefix(s, artworkPrefix) || len(s) == len(artworkPrefix) || len(s) > 300 ||
+		strings.ContainsAny(s, "?#\\ ") || strings.Contains(s, "..") {
+		return ""
+	}
+	return s
+}
+
+func firstStored(list []string) string {
+	for _, s := range list {
+		if a := storedArtwork(s); a != "" {
+			return a
+		}
+	}
+	return ""
+}
+
 func userIDOf(n flexInt) core.UserID {
 	if n <= 0 {
 		return ""

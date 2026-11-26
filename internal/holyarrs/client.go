@@ -24,11 +24,10 @@ import (
 )
 
 const (
-	maxBody     = 8 << 20  // response body cap
-	maxPoster   = 10 << 20 // poster body cap
-	maxLine     = 1 << 20  // longest event line read from stdin
-	maxInFlight = 6        // HolyArrs allows 8 open calls per plugin
-	perMinute   = 480      // HolyArrs allows 600 calls per minute
+	maxBody     = 8 << 20 // response body cap
+	maxLine     = 1 << 20 // longest event line read from stdin
+	maxInFlight = 6       // HolyArrs allows 8 open calls per plugin
+	perMinute   = 480     // HolyArrs allows 600 calls per minute
 
 	forUserHeader = "X-Holyarrs-For-User"
 	notLinkedText = "has not linked"

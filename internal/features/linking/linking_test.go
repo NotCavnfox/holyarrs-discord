@@ -433,6 +433,11 @@ func TestAdoptWithoutPendingEntry(t *testing.T) {
 	if r.linkOf(dB) != "9" || len(r.dms()) != 1 || r.roles(t) != "add:"+dB {
 		t.Fatalf("link %q, dms %v, roles %s", r.linkOf(dB), r.dms(), r.roles(t))
 	}
+	// The DM says what linking turns on and how to turn it off.
+	wantContains(t, r.dms()[0].text, "You are now linked", "each time one of your requests is available", "/privacy alerts:off")
+	if l, _ := r.lk.ByDiscord(dB); l.AlertsOff || l.ShowWatching {
+		t.Errorf("new link = %+v, want alerts on and the name hidden", l)
+	}
 }
 
 func TestNonSnowflakeExternalIgnored(t *testing.T) {
@@ -829,7 +834,12 @@ func TestWhoami(t *testing.T) {
 		{
 			name: "linked, shown",
 			link: &core.Link{DiscordID: dA, UserID: "7", UserName: "Alice", ShowWatching: true},
-			want: []string{"**Alice**", "is shown"},
+			want: []string{"**Alice**", "is shown", "Alerts: on"},
+		},
+		{
+			name: "linked, alerts off",
+			link: &core.Link{DiscordID: dA, UserID: "7", UserName: "Alice", AlertsOff: true},
+			want: []string{"hidden", "Alerts: off", "/privacy"},
 		},
 	}
 	for _, tc := range tests {

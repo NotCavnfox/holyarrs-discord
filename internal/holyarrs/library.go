@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +14,9 @@ import (
 )
 
 const (
-	artworkPrefix = "/api/v1/artwork/"
+	artworkPrefix  = "/api/v1/artwork/"
+	maxArtwork     = 5 << 20 // largest picture read
+	artworkTimeout = 15 * time.Second
 	// maxWatchPeople bounds the per-account reads RecentlyWatched makes.
 	maxWatchPeople = 20
 )
@@ -33,7 +34,7 @@ type titleWire struct {
 
 func (w titleWire) title() core.Title {
 	t := core.Title{ID: core.TitleID(w.ID), Name: w.Name, Year: int(w.Year), Kind: mapKind(w.Kind),
-		AddedAt: w.AddedAt.Time, PosterURL: firstPublic(w.Artwork)}
+		AddedAt: w.AddedAt.Time, PosterURL: firstPublic(w.Artwork), Artwork: firstStored(w.Artwork)}
 	if w.Overview != nil {
 		t.Overview = *w.Overview
 	}
@@ -69,7 +70,7 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]core.Title, er
 			break
 		}
 		titles = append(titles, core.Title{ID: core.TitleID(a.TitleID), Name: a.Name, Year: int(a.Year),
-			Kind: mapKind(a.Kind), AddedAt: a.At.Time, PosterURL: publicURL(a.Poster)})
+			Kind: mapKind(a.Kind), AddedAt: a.At.Time, PosterURL: publicURL(a.Poster), Artwork: storedArtwork(a.Poster)})
 	}
 	return titles, nil
 }
@@ -99,17 +100,22 @@ func (c *Client) Poster(ctx context.Context, id core.TitleID) ([]byte, string, e
 	if err != nil {
 		return nil, "", err
 	}
-	entry := ""
-	for _, a := range w.Artwork {
-		if strings.HasPrefix(a, artworkPrefix) && !strings.ContainsAny(a, "?#\\") && !strings.Contains(a, "..") {
-			entry = a
-			break
-		}
-	}
+	entry := firstStored(w.Artwork)
 	if entry == "" {
 		return nil, "", fmt.Errorf("holyarrs: poster of title %d: %w", id, core.ErrNotFound)
 	}
-	rep, err := c.do(ctx, call{method: http.MethodGet, path: entry, query: url.Values{"size": {"500"}}, limit: maxPoster})
+	return c.Artwork(ctx, entry)
+}
+
+// Artwork returns one stored picture by the path HolyArrs lists it under
+// (core.Title.Artwork), at full size: a stored file, so HolyArrs fetches
+// nothing for it. It needs the library.artwork.read permission. Anything
+// that is not such a path gives core.ErrNotFound without a call.
+func (c *Client) Artwork(ctx context.Context, ref string) ([]byte, string, error) {
+	if storedArtwork(ref) == "" {
+		return nil, "", fmt.Errorf("holyarrs: artwork: not a stored picture: %w", core.ErrNotFound)
+	}
+	rep, err := c.do(ctx, call{method: http.MethodGet, path: ref, limit: maxArtwork, timeout: artworkTimeout})
 	if err != nil {
 		return nil, "", err
 	}
@@ -286,7 +292,7 @@ func (c *Client) Upcoming(ctx context.Context, days int) ([]core.CalendarItem, e
 	items := make([]core.CalendarItem, 0, len(out.Dates))
 	for _, d := range out.Dates {
 		it := core.CalendarItem{Date: d.Date.Time, Title: core.Title{ID: core.TitleID(d.TitleID), Name: d.Name,
-			Year: int(d.Year), Kind: core.KindMovie, PosterURL: publicURL(d.Poster)}}
+			Year: int(d.Year), Kind: core.KindMovie, PosterURL: publicURL(d.Poster), Artwork: storedArtwork(d.Poster)}}
 		switch d.Kind {
 		case "episode":
 			it.Title.Kind = core.KindShow

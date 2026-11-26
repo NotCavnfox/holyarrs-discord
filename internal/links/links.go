@@ -20,11 +20,14 @@ const Document = "links"
 var ErrUserLinked = fmt.Errorf("links: %w", core.ErrAlreadyLinked)
 
 type record struct {
-	DiscordID    string    `json:"discord_id"`
-	UserID       string    `json:"user_id"`
-	UserName     string    `json:"user_name"`
-	ShowWatching bool      `json:"show_watching"`
-	LinkedAt     time.Time `json:"linked_at"`
+	DiscordID    string `json:"discord_id"`
+	UserID       string `json:"user_id"`
+	UserName     string `json:"user_name"`
+	ShowWatching bool   `json:"show_watching"`
+	// AlertsOff is left out when false, so a file written before the field
+	// existed reads as alerts on.
+	AlertsOff bool      `json:"alerts_off,omitempty"`
+	LinkedAt  time.Time `json:"linked_at"`
 }
 
 type document struct {
@@ -61,6 +64,7 @@ func New(st core.Store) (*Book, error) {
 			UserID:       core.UserID(r.UserID),
 			UserName:     r.UserName,
 			ShowWatching: r.ShowWatching,
+			AlertsOff:    r.AlertsOff,
 			LinkedAt:     r.LinkedAt,
 		}
 		if l.DiscordID == "" || l.UserID == "" {
@@ -173,6 +177,7 @@ func (b *Book) save(m map[string]core.Link) error {
 			UserID:       string(l.UserID),
 			UserName:     l.UserName,
 			ShowWatching: l.ShowWatching,
+			AlertsOff:    l.AlertsOff,
 			LinkedAt:     l.LinkedAt,
 		})
 	}

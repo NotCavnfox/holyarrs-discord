@@ -452,6 +452,7 @@ type FakeHolyArrs struct {
 	Titles      map[core.TitleID]core.Title
 	PosterData  []byte
 	PosterType  string
+	ArtworkData map[string][]byte // Artwork, by ref
 	PeopleVal   []core.PersonWatch
 	WatchedVal  []core.WatchedTitle // RecentlyWatched, cut to limit
 	UpcomingVal []core.CalendarItem
@@ -572,6 +573,20 @@ func (h *FakeHolyArrs) Poster(ctx context.Context, id core.TitleID) ([]byte, str
 		return nil, "", core.ErrNotFound
 	}
 	return append([]byte(nil), h.PosterData...), h.PosterType, nil
+}
+
+// Artwork returns ArtworkData[ref], or core.ErrNotFound when it is not there.
+func (h *FakeHolyArrs) Artwork(ctx context.Context, ref string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.record("Artwork", ref); err != nil {
+		return nil, "", err
+	}
+	data, ok := h.ArtworkData[ref]
+	if !ok {
+		return nil, "", core.ErrNotFound
+	}
+	return append([]byte(nil), data...), "image/jpeg", nil
 }
 
 func (h *FakeHolyArrs) WatchPeople(ctx context.Context) ([]core.PersonWatch, error) {
