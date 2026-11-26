@@ -1,0 +1,129 @@
+{
+  "id": "discord",
+  "name": "Discord",
+  "version": "1.0.0",
+  "author": "NotCavnfox",
+  "description": "A Discord bot for your server: link accounts, live library tiles, requests and ready pings.",
+  "long_description": "Runs a Discord bot inside HolyArrs. Members link their Discord account to their HolyArrs account with a one-time code, then see self-updating tiles of recently added and watched titles, make requests from Discord, and get a message when a request is ready. Names on the watch leaderboard are opt-in.",
+  "how_it_works": [
+    "Create a Discord application and bot, and invite it to your server.",
+    "Paste the bot token and your server and channel ids in the plugin settings.",
+    "Members join your Discord server and run /link.",
+    "They type the code under My account, Linked plugins."
+  ],
+  "category": "Community",
+  "licence": "MIT",
+  "repo": "https://github.com/NotCavnfox/holyarrs-discord",
+  "support_email": "support@cavnfox.com",
+  "support_url": "https://github.com/NotCavnfox/holyarrs-discord/issues",
+  "icon_file": "icon.svg",
+  "min_app_version": "1.3.2",
+  "access": {
+    "hosts": [
+      "discord.com",
+      "gateway.discord.gg",
+      "*.discord.gg",
+      "cdn.discordapp.com"
+    ],
+    "folders": [],
+    "actions": [
+      "library.read",
+      "calendar.read",
+      "discover.home.read",
+      "requests.read",
+      "requests.change",
+      "requests.users.read",
+      "pages.add",
+      "pages.home-widget"
+    ],
+    "events": [
+      "library.add",
+      "request.made",
+      "request.approved",
+      "request.declined",
+      "request.available"
+    ]
+  },
+  "settings": [
+    {
+      "key": "bot_token",
+      "label": "Bot token",
+      "type": "secret",
+      "help": "From the Bot tab of your application at discord.com/developers."
+    },
+    {
+      "key": "guild_id",
+      "label": "Server id",
+      "type": "text",
+      "help": "Right-click your Discord server, Copy Server ID (Developer Mode on)."
+    },
+    {
+      "key": "invite_url",
+      "label": "Invite link",
+      "type": "text",
+      "help": "An https://discord.gg/... invite shown on the Home card in HolyArrs."
+    },
+    {
+      "key": "dashboard_channel_id",
+      "label": "Dashboard channel id",
+      "type": "text",
+      "help": "Channel for the self-updating tiles. Leave empty to turn tiles off."
+    },
+    {
+      "key": "announce_channel_id",
+      "label": "Announcements channel id",
+      "type": "text",
+      "help": "Channel for new-title posts. Leave empty to turn them off."
+    },
+    {
+      "key": "mod_channel_id",
+      "label": "Moderator channel id",
+      "type": "text",
+      "help": "Channel for admin logs."
+    },
+    {
+      "key": "admin_role_id",
+      "label": "Admin role id",
+      "type": "text",
+      "help": "Members with this role can use admin commands."
+    },
+    {
+      "key": "linked_role_id",
+      "label": "Linked role id",
+      "type": "text",
+      "help": "Role given to members once they link. Optional."
+    },
+    {
+      "key": "refresh_minutes",
+      "label": "Tile refresh (minutes)",
+      "type": "number",
+      "default": 5,
+      "help": "How often the tiles refresh. 1 to 1440."
+    },
+    {
+      "key": "enable_dashboard",
+      "label": "Dashboard tiles",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "key": "enable_announce",
+      "label": "Announcements and ready pings",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "key": "enable_requests",
+      "label": "Requests from Discord",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "key": "enable_home_widget",
+      "label": "Discord card on Home",
+      "type": "toggle",
+      "default": true,
+      "help": "Shows every signed-in user how to join and link."
+    }
+  ]
+}
