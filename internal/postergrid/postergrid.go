@@ -87,6 +87,13 @@ func Decode(data []byte) (image.Image, error) {
 // Cells are ignored. Posters are decoded one at a time, so memory stays at
 // one poster plus the canvas. drawn is how many cells show a real poster.
 func Compose(cells []Cell) (jpg []byte, drawn int, err error) {
+	jpg, drawn, _, err = ComposeDetail(cells)
+	return jpg, drawn, err
+}
+
+// ComposeDetail is Compose that also says why posters were left out: one
+// short reason per unusable poster (its format or size, never its name).
+func ComposeDetail(cells []Cell) (jpg []byte, drawn int, unusable []string, err error) {
 	if len(cells) > Cells {
 		cells = cells[:Cells]
 	}
@@ -104,6 +111,8 @@ func Compose(cells []Cell) (jpg []byte, drawn int, err error) {
 				drawCover(dst, r, img)
 				drawn++
 				ok = true
+			} else {
+				unusable = append(unusable, err.Error())
 			}
 		}
 		if !ok {
@@ -113,9 +122,9 @@ func Compose(cells []Cell) (jpg []byte, drawn int, err error) {
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality}); err != nil {
-		return nil, 0, fmt.Errorf("postergrid: encode: %w", err)
+		return nil, 0, nil, fmt.Errorf("postergrid: encode: %w", err)
 	}
-	return buf.Bytes(), drawn, nil
+	return buf.Bytes(), drawn, unusable, nil
 }
 
 // cellRect is where cell i (0 based) sits.
