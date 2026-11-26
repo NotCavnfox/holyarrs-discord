@@ -48,6 +48,12 @@
 
 It deletes nothing, and it has no voice features.
 
+<p align="center">
+  <img src="docs/assets/sample-grid.jpg" width="340" alt="A 3x3 poster grid with numbered cells; one cell shows a title instead of a poster">
+  <br>
+  <sub>A grid tile as the plugin draws it. The posters here are made-up stand-ins, not real titles.<br>Cell 6 shows what a title without a stored poster looks like.</sub>
+</p>
+
 <details>
 <summary><b>Each feature in detail</b></summary>
 
@@ -237,6 +243,9 @@ The plugin keeps small JSON files in its own data folder:
 - Posters in the grids are HolyArrs's 250 px copies, drawn larger, so they look soft.
 - If Discord cannot be reached at start (or the bot token is wrong), the plugin stays running and
   tries again, waiting up to 2 minutes between tries. The log has one line per failed try.
+- A poster HolyArrs lists but no longer holds also gets a cell with the title's name. HolyArrs
+  keeps posters in a store with a size cap and drops the least used when it is full, so this
+  shows up on large libraries. The log then has a line `posters not drawn` with `not found`.
 - Poster tiles use only posters HolyArrs has stored. A title whose poster is still an outside link
   (`image.tmdb.org`, `static.tvmaze.com`) gets a cell with its name, because those hosts are not
   in the plugin's host list. This mostly affects Coming up.

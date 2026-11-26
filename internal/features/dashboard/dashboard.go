@@ -416,7 +416,7 @@ func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) 
 	if denied > 0 {
 		f.d.Log.Warn("dashboard: posters need the library.artwork.read permission", "tile", key, "posters", denied)
 	}
-	f.d.Log.Info("dashboard: drew tile", "tile", key, "titles", len(grid), "stored", want, "drawn", drawn, "failed", failed, "bytes", len(jpg))
+	f.d.Log.Info("dashboard: drew tile", "tile", key, "titles", len(grid), "listed", want, "drawn", drawn, "failed", failed, "bytes", len(jpg))
 	if len(why) > 0 {
 		reasons := make([]string, 0, len(why))
 		for r, n := range why {
