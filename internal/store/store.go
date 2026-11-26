@@ -30,7 +30,23 @@ func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("store: create data directory: %w", err)
 	}
+	sweepTemp(dir)
 	return &Store{dir: dir, locks: make(map[string]*sync.Mutex)}, nil
+}
+
+// sweepTemp removes the temp files a Save left behind when the process was
+// killed between its write and its rename. Best effort: nothing else in the
+// data folder ends in .tmp, and no Save is running yet.
+func sweepTemp(dir string) {
+	left, err := filepath.Glob(filepath.Join(dir, "*.*.tmp"))
+	if err != nil {
+		return
+	}
+	for _, p := range left {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
+			_ = os.Remove(p)
+		}
+	}
 }
 
 // Load fills v from <name>.json. A missing file leaves v as it is.

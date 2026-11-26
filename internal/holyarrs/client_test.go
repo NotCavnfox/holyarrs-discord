@@ -402,8 +402,11 @@ func TestRemoveLink(t *testing.T) {
 		t.Errorf("403: %v", err)
 	}
 	for _, u := range []core.UserID{"21", "22"} {
-		if err := c.RemoveLink(ctx, u); err == nil || errors.Is(err, core.ErrUnsupported) {
+		err := c.RemoveLink(ctx, u)
+		if err == nil || errors.Is(err, core.ErrUnsupported) {
 			t.Errorf("user %s: %v, want a plain error", u, err)
+		} else if strings.Contains(err.Error(), "links/"+string(u)) {
+			t.Errorf("user %s: the error names the user id: %v", u, err)
 		}
 	}
 	// A name is not an id: nothing is sent.
@@ -420,7 +423,7 @@ func TestRemoveLink(t *testing.T) {
 	for _, st := range []int{404, 405} {
 		old, _ := newTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fail(w, st, "nope") }))
 		err := old.RemoveLink(ctx, "7")
-		if !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "DELETE /api/v1/plugin-hooks/links/7") {
+		if !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "DELETE /api/v1/plugin-hooks/links/{user}") {
 			t.Errorf("status %d: %v", st, err)
 		}
 	}
@@ -452,6 +455,14 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "image/jpeg")
 			_, _ = w.Write([]byte("JPEGDATA"))
+		case "small.jpg":
+			if r.URL.RawQuery != "size=250" {
+				t.Errorf("thumbnail query %q", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("SMALL"))
+		case "big-small.jpg":
+			_, _ = w.Write(make([]byte, maxThumbnail+1))
 		case "huge.jpg":
 			_, _ = w.Write(make([]byte, maxArtwork+1))
 		case "closed.jpg":
@@ -502,6 +513,19 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	}
 	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/closed.jpg"); !errors.Is(err, core.ErrForbidden) {
 		t.Errorf("no permission: %v", err)
+	}
+	// Thumbnail asks for the small size and takes at most 1 MB.
+	if data, ct, err := c.Thumbnail(ctx, "/api/v1/artwork/small.jpg"); err != nil || string(data) != "SMALL" || ct != "image/jpeg" {
+		t.Errorf("thumbnail %q %q %v", data, ct, err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "/api/v1/artwork/big-small.jpg"); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("oversized thumbnail: %v", err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "/api/v1/artwork/gone.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("missing thumbnail: %v", err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "https://image.tmdb.org/x.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("outside thumbnail: %v", err)
 	}
 	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/huge.jpg"); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("a picture over the cap: %v", err)
@@ -583,20 +607,9 @@ func TestRecentlyWatchedAndCleanup(t *testing.T) {
 		t.Errorf("limit %+v", ws)
 	}
 
-	cs, err := c.CleanupCandidates(ctx)
-	if err != nil || len(cs) != 1 {
-		t.Fatalf("%v %v", cs, err)
-	}
-	if cs[0].Title.Name != "Heat" || cs[0].Title.Year != 1995 || cs[0].SizeBytes != 9000 || cs[0].LastWatched.IsZero() || fmt.Sprint(cs[0].AskedBy) != "[7]" {
-		t.Errorf("candidate %+v", cs[0])
-	}
-
 	enabled = false
 	if ws, err := c.RecentlyWatched(ctx, 10); err != nil || len(ws) != 0 {
 		t.Errorf("disabled watched: %v %v", ws, err)
-	}
-	if cs, err := c.CleanupCandidates(ctx); err != nil || len(cs) != 0 {
-		t.Errorf("disabled cleanup: %v %v", cs, err)
 	}
 }
 
@@ -769,33 +782,6 @@ func TestCreateRequest(t *testing.T) {
 		if _, err := c.CreateRequest(ctx, "7", core.SearchResult{Ref: ref}); err == nil {
 			t.Errorf("ref %q accepted", ref)
 		}
-	}
-}
-
-func TestDeleteTitle(t *testing.T) {
-	c, _ := newTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var in map[string]bool
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		if r.Method != http.MethodPost || !in["apply"] || !in["delete_files"] {
-			t.Errorf("%s %s %v", r.Method, r.URL.Path, in)
-		}
-		switch r.URL.Path {
-		case "/api/v1/titles/5/delete":
-			writeJSON(w, 200, map[string]any{"title_id": 5})
-		case "/api/v1/titles/6/delete":
-			fail(w, 403, "this plugin was not given the library.delete permission")
-		default:
-			fail(w, 404, "no such Title")
-		}
-	}))
-	if err := c.DeleteTitle(context.Background(), 5); err != nil {
-		t.Error(err)
-	}
-	if err := c.DeleteTitle(context.Background(), 6); !errors.Is(err, core.ErrForbidden) {
-		t.Errorf("got %v", err)
-	}
-	if err := c.DeleteTitle(context.Background(), 7); !errors.Is(err, core.ErrNotFound) {
-		t.Errorf("got %v", err)
 	}
 }
 

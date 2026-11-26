@@ -70,7 +70,7 @@ func TestEvents(t *testing.T) {
 
 	ev := recv(t, ch)
 	if ev.Type != core.EventTitleAdded || ev.WireType != "library.add" || ev.TitleID != 12 || ev.RequestID != "" ||
-		!ev.At.Equal(time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)) || string(ev.Raw) != lines[0] {
+		!ev.At.Equal(time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)) {
 		t.Errorf("library.add %+v", ev)
 	}
 	ev = recv(t, ch)
@@ -87,10 +87,10 @@ func TestEvents(t *testing.T) {
 	if ev = recv(t, ch); ev.Type != core.EventRequestAvailable || ev.TitleID != 9 || ev.RequestID != "31" {
 		t.Errorf("request.available %+v", ev)
 	}
-	if ev = recv(t, ch); ev.Type != core.EventOther || ev.WireType != "big" || len(ev.Raw) < maxLine-200 {
-		t.Errorf("big line: type %s wire %s raw %d bytes", ev.Type, ev.WireType, len(ev.Raw))
+	if ev = recv(t, ch); ev.Type != core.EventOther || ev.WireType != "big" {
+		t.Errorf("big line: type %s wire %s", ev.Type, ev.WireType)
 	}
-	if ev = recv(t, ch); ev.Type != core.EventOther || ev.WireType != "missed" || ev.Raw == nil {
+	if ev = recv(t, ch); ev.Type != core.EventOther || ev.WireType != "missed" {
 		t.Errorf("missed %+v", ev)
 	}
 	if ev = recv(t, ch); ev.Type != core.EventOther || ev.WireType != "download.done" || ev.TitleID != 4 {

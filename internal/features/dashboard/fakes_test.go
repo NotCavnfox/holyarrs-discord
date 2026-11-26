@@ -87,7 +87,13 @@ func (h *fakeHA) Poster(context.Context, core.TitleID) ([]byte, string, error) {
 	h.hit("poster")
 	return h.poster, h.posterType, h.posterErr
 }
-func (h *fakeHA) Artwork(_ context.Context, ref string) ([]byte, string, error) {
+func (h *fakeHA) Artwork(context.Context, string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hit("artwork-full")
+	return nil, "", core.ErrNotFound
+}
+func (h *fakeHA) Thumbnail(_ context.Context, ref string) ([]byte, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.hit("artwork")
@@ -166,10 +172,6 @@ func (h *fakeHA) CreateRequest(_ context.Context, as core.UserID, what core.Sear
 		AskedBy: []core.UserID{as},
 	}, nil
 }
-func (h *fakeHA) CleanupCandidates(context.Context) ([]core.CleanupCandidate, error) {
-	return nil, nil
-}
-func (h *fakeHA) DeleteTitle(context.Context, core.TitleID) error { return nil }
 func (h *fakeHA) Events(context.Context) (<-chan core.Event, error) {
 	return nil, nil
 }

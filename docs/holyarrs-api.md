@@ -97,7 +97,7 @@ plugin scope answers `403 "plugins can't use this route"`; a missing scope answe
 | library.read | `GET /api/v1/library/watched-cleanup?days=&people=k1,k2` | `{enabled,days,people:[{key,name,server,chosen}],found:[{id,kind,name,year?,bytes,last_watched_at}]}` |
 | library.read | `GET /api/v1/titles/lookup?term=&year=` | movies; results carry tmdb id, `title_id?` (in library), `ask?` |
 | library.read | `GET /api/v1/shows/lookup?term=&source=tmdb` | `{shows:[{…,title_id?,ask?}],source}` |
-| library.artwork.read (held through library.read) | `GET /api/v1/artwork/{name}[?size=250]` | A stored picture, as listed in a title's `artwork`, a Home card's `poster` or a calendar date's `poster` (`/api/v1/artwork/<name>`). Raw bytes from disk: JPEG, PNG or WebP by the name's extension, at most 10 MB; `?size=250` gives a JPEG at most 250 px a side; `404` when not stored. The bot reads full size and caps at 5 MB. A `poster` that is not such a path is an outside `https` link (TMDB, TVmaze) the plugin cannot fetch |
+| library.artwork.read (held through library.read) | `GET /api/v1/artwork/{name}[?size=250]` | A stored picture, as listed in a title's `artwork`, a Home card's `poster` or a calendar date's `poster` (`/api/v1/artwork/<name>`). Raw bytes from disk: JPEG, PNG or WebP by the name's extension, at most 10 MB; `?size=250` gives a JPEG at most 250 px a side; `404` when not stored. The poster grid reads `?size=250` and caps at 1 MB; full size (capped at 5 MB) is read only for a new-title post. A `poster` that is not such a path is an outside `https` link (TMDB, TVmaze) the plugin cannot fetch |
 | library.artwork.read | `GET /api/v1/artwork/tmdb/{size}/{file}`, `GET /api/v1/artwork/img/{kind}/{id}/{file}` | Pictures HolyArrs fetches on demand; a cache miss may 429 with `Retry-After: 60`. Not used by the bot |
 | calendar.read | `GET /api/v1/calendar?from=YYYY-MM-DD&to=&titles=all` | `{dates:[{title_id,name,year?,kind,date,season?,episode?,episode_name?,poster?}]}` |
 | discover.home.read | `GET /api/v1/home` | `{…,arrived:[…],soon:[{key,kind,title_id,name,year?,line?,poster?,at?}]}` (confirm `arrived` item shape in source) |
@@ -110,4 +110,7 @@ There is no now-playing or sessions route.
 
 ## Manifest notes
 `version` is required by the engine in dev mode. `*.discord.gg` matches `gateway.discord.gg` but
-not `discord.gg`; list bare domains separately. Hosts limit is 100 in code.
+not `discord.gg`; list bare domains separately. Hosts limit is 100 in code. The manifest lists
+only `discord.com` and `gateway.discord.gg`: discordgo 0.29.0 dials the address `GET /gateway`
+returns (wsapi.go `Open`) for the first connection and for every reconnect and resume, and does
+not read `resume_gateway_url`.

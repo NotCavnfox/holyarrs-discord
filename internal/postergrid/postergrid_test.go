@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -228,5 +229,57 @@ func TestLongTitleStaysInItsCell(t *testing.T) {
 	}
 	if hasText(img, 1) || hasText(img, 3) {
 		t.Error("the title ran into another cell")
+	}
+}
+
+// maxPoster is a picture of exactly the largest size Decode takes, in the
+// shape of a poster: 1154x1733 is 1,999,882 pixels.
+func maxPoster() *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 1154, 1733))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(i * 31)
+	}
+	return img
+}
+
+// Nine posters of the largest size that is decoded must fit the plugin's
+// 512 MiB. TotalAlloc is everything Compose allocated, kept or not, so it is
+// an upper bound on what was live at any moment and does not depend on when
+// the collector ran: under the limits below the nine fit even if nothing were
+// freed in between. Most of it is the scaler's buffer (cell width x source
+// height x 32 bytes, 16 MiB here); a real small poster needs about 2 MiB.
+// Measured: 172 MiB (JPEG) and 215 MiB (PNG) in all; peak RSS about 90 MiB,
+// and about 20 MiB for nine small posters.
+func TestComposeNineLargestPostersStaysSmall(t *testing.T) {
+	if int64(1154)*1733 > MaxPixels || int64(1155)*1734 <= MaxPixels {
+		t.Fatalf("the test picture is not the largest one for MaxPixels = %d", MaxPixels)
+	}
+	for _, tc := range []struct {
+		name  string
+		data  []byte
+		limit uint64 // bytes allocated by one Compose
+	}{
+		{"jpeg", jpegOf(t, maxPoster()), 256 << 20},
+		{"png", pngOf(t, maxPoster()), 320 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cells := make([]Cell, Cells)
+			for i := range cells {
+				cells[i] = Cell{Title: "T", Poster: tc.data}
+			}
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			jpg, drawn, err := Compose(cells)
+			runtime.ReadMemStats(&after)
+			if err != nil || drawn != Cells {
+				t.Fatalf("drawn %d, err %v", drawn, err)
+			}
+			got := after.TotalAlloc - before.TotalAlloc
+			t.Logf("nine %s posters of %d pixels: %.1f MiB allocated in all, %d KiB out", tc.name, 1154*1733, float64(got)/(1<<20), len(jpg)>>10)
+			if got > tc.limit {
+				t.Errorf("Compose allocated %d MiB, want at most %d MiB", got>>20, tc.limit>>20)
+			}
+		})
 	}
 }

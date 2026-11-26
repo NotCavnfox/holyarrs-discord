@@ -168,7 +168,7 @@ func (c *Client) parseEvent(line []byte) (core.Event, bool) {
 	if p.Test {
 		return core.Event{}, false
 	}
-	ev := core.Event{Type: core.EventOther, WireType: env.Event, At: env.At.Time, Raw: json.RawMessage(bytes.Clone(line))}
+	ev := core.Event{Type: core.EventOther, WireType: env.Event, At: env.At.Time}
 	if t, ok := eventTypes[env.Event]; ok {
 		ev.Type = t
 	}

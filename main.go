@@ -78,6 +78,9 @@ func run(log *slog.Logger) error {
 	go selfcheck.Run(ctx, ha, discordgw.Probe, log)
 
 	bus := app.NewBus(log)
+	// Link changes go out on the bus, so the dashboard redraws Top watchers
+	// and the requests feature forgets an unlinked member's requests.
+	book.OnChange(bus.Publish)
 	deps := core.Deps{
 		Cfg:    cfg,
 		HA:     ha,

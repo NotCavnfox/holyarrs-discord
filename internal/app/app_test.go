@@ -304,19 +304,15 @@ func TestBusCloseEndsAWaitingPublish(t *testing.T) {
 	b.Close()
 }
 
-// eventsAfterOpen records whether Discord was open when the event stream
-// was first asked for, and hands back a stream that already holds events.
+// eventsAfterOpen hands back a stream that already holds events.
 type eventsAfterOpen struct {
 	core.HolyArrs
-	dc       *coretest.FakeDiscord
-	wasOpen  atomic.Bool
 	asked    atomic.Int32
 	backfill []core.Event
 }
 
 func (h *eventsAfterOpen) Events(ctx context.Context) (<-chan core.Event, error) {
 	if h.asked.Add(1) == 1 {
-		h.wasOpen.Store(h.dc.IsOpen())
 		ch := make(chan core.Event, len(h.backfill))
 		for _, e := range h.backfill {
 			ch <- e
@@ -328,12 +324,11 @@ func (h *eventsAfterOpen) Events(ctx context.Context) (<-chan core.Event, error)
 }
 
 // Events that are already waiting when the bot starts reach a feature that
-// subscribed in its constructor, however late its Run gets going, and the
-// stream is not read before Discord is open.
+// subscribed in its constructor, however late its Run gets going.
 func TestRunLosesNoStartupEvents(t *testing.T) {
-	deps, f := coretest.NewDeps(t)
+	deps, _ := coretest.NewDeps(t)
 	const n = 200
-	ha := &eventsAfterOpen{HolyArrs: deps.HA, dc: f.DC}
+	ha := &eventsAfterOpen{HolyArrs: deps.HA}
 	for i := 1; i <= n; i++ {
 		ha.backfill = append(ha.backfill, core.Event{Type: core.EventTitleAdded, TitleID: core.TitleID(i)})
 	}
@@ -366,9 +361,6 @@ func TestRunLosesNoStartupEvents(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("event %d was lost", i)
 		}
-	}
-	if !ha.wasOpen.Load() {
-		t.Fatal("event stream was opened before Discord")
 	}
 	cancel()
 	if err := wait(t, res); err != nil {
@@ -607,8 +599,97 @@ func TestRunLifecycle(t *testing.T) {
 	}
 }
 
+// flakyOpen fails the first fails calls to Open with an error that holds
+// nothing secret, as the real adapter's errors do.
+type flakyOpen struct {
+	*coretest.FakeDiscord
+	fails int32
+	tries atomic.Int32
+}
+
+func (d *flakyOpen) Open(ctx context.Context, cmds []core.Command, router core.InteractionHandler) error {
+	if d.tries.Add(1) <= d.fails {
+		return errors.New("discord connect: no such host")
+	}
+	return d.FakeDiscord.Open(ctx, cmds, router)
+}
+
+// lockedBuf is a log sink that goroutines can share.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// A Discord that does not open at start is tried again until it does; the
+// process never exits over it.
+func TestRunRetriesOpen(t *testing.T) {
+	deps, f := coretest.NewDeps(t)
+	var logs lockedBuf
+	deps.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	dc := &flakyOpen{FakeDiscord: f.DC, fails: 3}
+	deps.DC = dc
+	ft := &feature{name: "a"}
+	cancel, res := start(t, deps, NewBus(nil), []core.Feature{ft}, fast)
+	coretest.Eventually(t, "the feature to run", func() bool { return ft.runs.Load() == 1 })
+	if got := dc.tries.Load(); got != 4 || !f.DC.IsOpen() {
+		t.Fatalf("Open tried %d times, open = %v", got, f.DC.IsOpen())
+	}
+	cancel()
+	if err := wait(t, res); err != nil {
+		t.Fatal(err)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "Discord did not open, retrying"); n != 3 {
+		t.Errorf("%d retry lines, want one per failed attempt (3):\n%s", n, out)
+	}
+	if strings.Contains(out, deps.Cfg.BotToken) {
+		t.Errorf("log holds the token:\n%s", out)
+	}
+}
+
+// While Discord keeps failing the bot stays up, starts no feature, and still
+// stops cleanly when told to.
+func TestRunStopsWhileOpenFails(t *testing.T) {
+	deps, f := coretest.NewDeps(t)
+	f.DC.SetErr("Open", errors.New("gateway down"))
+	ft := &feature{name: "a"}
+	bus := NewBus(nil)
+	sub := bus.Subscribe("s")
+	cancel, res := start(t, deps, bus, []core.Feature{ft}, fast)
+	coretest.Eventually(t, "several attempts", func() bool { return len(f.DC.CallsTo("Open")) >= 3 })
+	select {
+	case err := <-res:
+		t.Fatalf("RunWith returned %v while Discord was down", err)
+	default:
+	}
+	cancel()
+	if err := wait(t, res); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if ft.runs.Load() != 0 {
+		t.Fatal("feature ran although Discord never opened")
+	}
+	if _, ok := <-sub; ok {
+		t.Fatal("bus left open")
+	}
+	if len(f.DC.CallsTo("Close")) != 1 {
+		t.Fatal("Discord not closed")
+	}
+}
+
 func TestRunStartErrors(t *testing.T) {
-	boom := errors.New("gateway down")
 	tests := []struct {
 		name     string
 		features []core.Feature
@@ -618,7 +699,6 @@ func TestRunStartErrors(t *testing.T) {
 	}{
 		{"duplicate command", []core.Feature{&feature{name: "a", cmds: cmd("x")}, &feature{name: "b", cmds: cmd("x")}}, nil, "duplicate command", 0},
 		{"duplicate feature", []core.Feature{&feature{name: "a"}, &feature{name: "a"}}, nil, "duplicate feature", 0},
-		{"open fails", []core.Feature{&feature{name: "a"}}, boom, "gateway down", 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

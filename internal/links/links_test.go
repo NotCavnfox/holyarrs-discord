@@ -218,8 +218,8 @@ func TestNewErrors(t *testing.T) {
 		want string
 	}{
 		{"corrupt", `{`, "load"},
-		{"duplicate discord", `{"links":[{"discord_id":"1","user_id":"a"},{"discord_id":"1","user_id":"b"}]}`, "twice"},
-		{"duplicate user", `{"links":[{"discord_id":"1","user_id":"a"},{"discord_id":"2","user_id":"a"}]}`, "twice"},
+		{"duplicate discord", `{"links":[{"discord_id":"1","user_id":"a"},{"discord_id":"1","user_id":"b"}]}`, "entry 1 in links.json repeats a Discord id"},
+		{"duplicate user", `{"links":[{"discord_id":"1","user_id":"a"},{"discord_id":"2","user_id":"a"}]}`, "entry 1 in links.json repeats a user id"},
 		{"empty id", `{"links":[{"discord_id":"","user_id":"a"}]}`, "empty id"},
 	}
 	for _, tc := range tests {
@@ -239,6 +239,46 @@ func TestNewErrors(t *testing.T) {
 	st.SetErr("Load", errors.New("io"))
 	if _, err := links.New(st); err == nil {
 		t.Fatal("load error swallowed")
+	}
+}
+
+// Load errors are logged: they name the entry, never an id.
+func TestNewErrorsHoldNoIDs(t *testing.T) {
+	for _, raw := range []string{
+		`{"links":[{"discord_id":"302845117690216450","user_id":"71"},{"discord_id":"302845117690216450","user_id":"72"}]}`,
+		`{"links":[{"discord_id":"302845117690216450","user_id":"71"},{"discord_id":"302845117690216451","user_id":"71"}]}`,
+	} {
+		st := coretest.NewFakeStore()
+		st.SetRaw(links.Document, []byte(raw))
+		_, err := links.New(st)
+		if err == nil || strings.Contains(err.Error(), "3028451176902164") || strings.Contains(err.Error(), "71") {
+			t.Errorf("err = %v, want one without ids", err)
+		}
+	}
+}
+
+func TestOnChange(t *testing.T) {
+	b, st := newBook(t)
+	var got []string
+	b.OnChange(func(ev core.Event) {
+		b.All() // the book is unlocked while fn runs
+		got = append(got, string(ev.Type)+" "+ev.Member)
+	})
+	must(t, b.Put(core.Link{DiscordID: "1", UserID: "a"}))
+	must(t, b.Put(core.Link{DiscordID: "1", UserID: "a", ShowWatching: true}))
+	must(t, b.Put(core.Link{DiscordID: "1", UserID: "b"})) // another user: the old link is gone first
+	must(t, b.Remove("1"))
+	must(t, b.Remove("1")) // nothing there: no event
+	if err := b.Put(core.Link{DiscordID: "2"}); err == nil {
+		t.Fatal("bad link accepted")
+	}
+	st.SetErr("Save", errors.New("disk"))
+	if err := b.Put(core.Link{DiscordID: "3", UserID: "c"}); err == nil {
+		t.Fatal("save error swallowed")
+	}
+	want := "link.changed 1|link.changed 1|link.removed 1|link.changed 1|link.removed 1"
+	if s := strings.Join(got, "|"); s != want {
+		t.Fatalf("events %s, want %s", s, want)
 	}
 }
 

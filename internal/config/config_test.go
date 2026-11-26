@@ -61,7 +61,6 @@ func TestLoadAllSettings(t *testing.T) {
 		SettingPrefix + "INVITE_URL":           " https://discord.gg/abc ",
 		SettingPrefix + "DASHBOARD_CHANNEL_ID": "11",
 		SettingPrefix + "ANNOUNCE_CHANNEL_ID":  "22",
-		SettingPrefix + "MOD_CHANNEL_ID":       "33",
 		SettingPrefix + "ADMIN_ROLE_ID":        "44",
 		SettingPrefix + "LINKED_ROLE_ID":       "55",
 		SettingPrefix + "REFRESH_MINUTES":      "15",
@@ -73,9 +72,9 @@ func TestLoadAllSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got := fmt.Sprint(cfg.InviteURL, cfg.DashboardChannel, cfg.AnnounceChannel, cfg.ModChannel,
+	got := fmt.Sprint(cfg.InviteURL, cfg.DashboardChannel, cfg.AnnounceChannel,
 		cfg.AdminRoleID, cfg.LinkedRoleID, cfg.RefreshEvery, cfg.EnableDashboard, cfg.EnableAnnounce, cfg.EnableRequests, cfg.EnableHomeWidget)
-	want := fmt.Sprint("https://discord.gg/abc", "11", "22", "33", "44", "55", 15*time.Minute, false, true, false, false)
+	want := fmt.Sprint("https://discord.gg/abc", "11", "22", "44", "55", 15*time.Minute, false, true, false, false)
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -136,7 +135,7 @@ func TestLoadErrors(t *testing.T) {
 		{"guild not digits", map[string]string{SettingPrefix + "GUILD_ID": "12ab"}, []string{"GUILD_ID"}},
 		{"channel mention", map[string]string{SettingPrefix + "DASHBOARD_CHANNEL_ID": "<#123>"}, []string{"DASHBOARD_CHANNEL_ID"}},
 		{"announce not digits", map[string]string{SettingPrefix + "ANNOUNCE_CHANNEL_ID": "general"}, []string{"ANNOUNCE_CHANNEL_ID"}},
-		{"mod negative", map[string]string{SettingPrefix + "MOD_CHANNEL_ID": "-1"}, []string{"MOD_CHANNEL_ID"}},
+		{"dashboard negative", map[string]string{SettingPrefix + "DASHBOARD_CHANNEL_ID": "-1"}, []string{"DASHBOARD_CHANNEL_ID"}},
 		{"admin role name", map[string]string{SettingPrefix + "ADMIN_ROLE_ID": "@admin"}, []string{"ADMIN_ROLE_ID"}},
 		{"linked role spaces", map[string]string{SettingPrefix + "LINKED_ROLE_ID": "1 2"}, []string{"LINKED_ROLE_ID"}},
 		{"snowflake too long", map[string]string{SettingPrefix + "GUILD_ID": strings.Repeat("9", 21)}, []string{"GUILD_ID"}},
@@ -150,11 +149,11 @@ func TestLoadErrors(t *testing.T) {
 		{"toggle widget", map[string]string{SettingPrefix + "ENABLE_HOME_WIDGET": "on"}, []string{"ENABLE_HOME_WIDGET"}},
 		{"several at once", map[string]string{
 			EnvData:                           "<unset>",
-			SettingPrefix + "MOD_CHANNEL_ID":  "x",
+			SettingPrefix + "ADMIN_ROLE_ID":   "x",
 			SettingPrefix + "INVITE_URL":      "ftp://x",
 			SettingPrefix + "REFRESH_MINUTES": "soon",
 			SettingPrefix + "ENABLE_REQUESTS": "maybe",
-		}, []string{EnvData, "MOD_CHANNEL_ID", "INVITE_URL", "REFRESH_MINUTES", "ENABLE_REQUESTS"}},
+		}, []string{EnvData, "ADMIN_ROLE_ID", "INVITE_URL", "REFRESH_MINUTES", "ENABLE_REQUESTS"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -193,20 +192,29 @@ func TestErrorsNeverEchoValues(t *testing.T) {
 }
 
 func TestRedacted(t *testing.T) {
-	cfg, err := Load(env(nil))
+	const invite, channel, role = "https://discord.gg/sEcReTinvite", "222222222222222222", "333333333333333333"
+	cfg, err := Load(env(map[string]string{
+		SettingPrefix + "INVITE_URL":           invite,
+		SettingPrefix + "DASHBOARD_CHANNEL_ID": channel,
+		SettingPrefix + "ADMIN_ROLE_ID":        role,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
 	slog.New(slog.NewTextHandler(&buf, nil)).Info("config", "cfg", Redacted(cfg))
 	out := buf.String() + Redacted(cfg).String()
-	for _, s := range []string{botSecret, pluginSecret} {
+	// Counts only: no token, no Discord id, no invite link.
+	for _, s := range []string{botSecret, pluginSecret, cfg.GuildID, invite, "sEcReTinvite", channel, role} {
 		if strings.Contains(out, s) {
-			t.Fatalf("Redacted leaks a token: %s", out)
+			t.Fatalf("Redacted leaks %q: %s", s, out)
 		}
 	}
-	if !strings.Contains(out, "[redacted]") || !strings.Contains(out, "123456789012345678") {
-		t.Fatalf("unexpected output: %s", out)
+	for _, w := range []string{"[redacted]", "guild_set=true", "invite_set=true", "dashboard_channel_set=true",
+		"announce_channel_set=false", "admin_role_set=true", "linked_role_set=false"} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("output lacks %s: %s", w, out)
+		}
 	}
 	cfg.BotToken = ""
 	if !strings.Contains(Redacted(cfg).String(), "[unset]") {

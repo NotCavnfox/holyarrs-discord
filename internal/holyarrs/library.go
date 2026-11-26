@@ -2,7 +2,6 @@ package holyarrs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +15,8 @@ import (
 const (
 	artworkPrefix  = "/api/v1/artwork/"
 	maxArtwork     = 5 << 20 // largest picture read
+	maxThumbnail   = 1 << 20 // largest small picture read; a real one is under 100 KB
+	thumbnailSize  = "250"   // the one small size the artwork route offers
 	artworkTimeout = 15 * time.Second
 	// maxWatchPeople bounds the per-account reads RecentlyWatched makes.
 	maxWatchPeople = 20
@@ -112,10 +113,21 @@ func (c *Client) Poster(ctx context.Context, id core.TitleID) ([]byte, string, e
 // nothing for it. It needs the library.artwork.read permission. Anything
 // that is not such a path gives core.ErrNotFound without a call.
 func (c *Client) Artwork(ctx context.Context, ref string) ([]byte, string, error) {
+	return c.artwork(ctx, ref, nil, maxArtwork)
+}
+
+// Thumbnail returns the same stored picture as a JPEG of at most 250 pixels
+// a side (?size=250), which HolyArrs scales itself. The poster grid uses it:
+// nine full-size posters do not fit the plugin's memory limit.
+func (c *Client) Thumbnail(ctx context.Context, ref string) ([]byte, string, error) {
+	return c.artwork(ctx, ref, url.Values{"size": {thumbnailSize}}, maxThumbnail)
+}
+
+func (c *Client) artwork(ctx context.Context, ref string, q url.Values, limit int64) ([]byte, string, error) {
 	if storedArtwork(ref) == "" {
 		return nil, "", fmt.Errorf("holyarrs: artwork: not a stored picture: %w", core.ErrNotFound)
 	}
-	rep, err := c.do(ctx, call{method: http.MethodGet, path: ref, limit: maxArtwork, timeout: artworkTimeout})
+	rep, err := c.do(ctx, call{method: http.MethodGet, path: ref, query: q, limit: limit, timeout: artworkTimeout})
 	if err != nil {
 		return nil, "", err
 	}
@@ -316,47 +328,4 @@ func (c *Client) Upcoming(ctx context.Context, days int) ([]core.CalendarItem, e
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
 	return items, nil
-}
-
-// CleanupCandidates lists the titles HolyArrs suggests could be deleted:
-// finished by every watching account at least 30 days ago (its default).
-func (c *Client) CleanupCandidates(ctx context.Context) ([]core.CleanupCandidate, error) {
-	w, err := c.cleanup(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	out := []core.CleanupCandidate{}
-	if !w.Enabled {
-		return out, nil
-	}
-	var ids []core.TitleID
-	for _, f := range w.Found {
-		if f.ID <= 0 {
-			continue
-		}
-		ids = append(ids, core.TitleID(f.ID))
-		out = append(out, core.CleanupCandidate{SizeBytes: int64(f.Bytes), LastWatched: f.LastWatchedAt.Time,
-			Title: core.Title{ID: core.TitleID(f.ID), Name: f.Name, Year: int(f.Year), Kind: mapKind(f.Kind)}})
-	}
-	asked, err := c.AskedBy(ctx, ids)
-	if errors.Is(err, core.ErrForbidden) {
-		// Without requests.read the list still stands, only without askers.
-		c.log.Warn("holyarrs: clean-up list without askers", "err", err)
-		return out, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	for i := range out {
-		out[i].AskedBy = asked[out[i].Title.ID]
-	}
-	return out, nil
-}
-
-// DeleteTitle removes a title and its files. It needs the library.delete
-// scope; without it the answer is core.ErrForbidden.
-func (c *Client) DeleteTitle(ctx context.Context, id core.TitleID) error {
-	_, err := c.do(ctx, call{method: http.MethodPost, path: titlePath(id) + "/delete",
-		body: map[string]any{"apply": true, "delete_files": true}})
-	return err
 }

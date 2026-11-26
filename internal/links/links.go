@@ -42,6 +42,27 @@ type Book struct {
 	mu        sync.RWMutex
 	byDiscord map[string]core.Link
 	byUser    map[core.UserID]string // user id -> Discord id
+	onChange  func(core.Event)
+}
+
+// OnChange makes fn hear of every saved change: core.EventLinkChanged after
+// a Put, core.EventLinkRemoved after a Remove (and before the Changed event
+// of a Put that moved the member to another HolyArrs user). The event's
+// Member is the Discord id. fn runs after the book is unlocked, in the
+// goroutine that made the change. Set it before the book is shared.
+func (b *Book) OnChange(fn func(core.Event)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onChange = fn
+}
+
+func (b *Book) notify(fn func(core.Event), member string, types ...core.EventType) {
+	if fn == nil {
+		return
+	}
+	for _, t := range types {
+		fn(core.Event{Type: t, Member: member})
+	}
 }
 
 // New loads the book from the store. A missing document is an empty book.
@@ -71,10 +92,10 @@ func New(st core.Store) (*Book, error) {
 			return nil, fmt.Errorf("links: entry %d in %s.json has an empty id", i, Document)
 		}
 		if _, dup := b.byDiscord[l.DiscordID]; dup {
-			return nil, fmt.Errorf("links: Discord id %s appears twice in %s.json", l.DiscordID, Document)
+			return nil, fmt.Errorf("links: entry %d in %s.json repeats a Discord id", i, Document)
 		}
 		if _, dup := b.byUser[l.UserID]; dup {
-			return nil, fmt.Errorf("links: user %s appears twice in %s.json", l.UserID, Document)
+			return nil, fmt.Errorf("links: entry %d in %s.json repeats a user id", i, Document)
 		}
 		b.byDiscord[l.DiscordID] = l
 		b.byUser[l.UserID] = l.DiscordID
@@ -116,10 +137,24 @@ func (b *Book) Put(l core.Link) error {
 	if l.DiscordID == "" || l.UserID == "" {
 		return errors.New("links: link needs a Discord id and a user id")
 	}
+	fn, moved, err := b.put(l)
+	if err != nil {
+		return err
+	}
+	if moved {
+		b.notify(fn, l.DiscordID, core.EventLinkRemoved)
+	}
+	b.notify(fn, l.DiscordID, core.EventLinkChanged)
+	return nil
+}
+
+// put is Put under the lock. moved says the member had a link to another
+// HolyArrs user.
+func (b *Book) put(l core.Link) (fn func(core.Event), moved bool, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if owner, ok := b.byUser[l.UserID]; ok && owner != l.DiscordID {
-		return ErrUserLinked
+		return nil, false, ErrUserLinked
 	}
 	next := make(map[string]core.Link, len(b.byDiscord)+1)
 	for k, v := range b.byDiscord {
@@ -127,24 +162,36 @@ func (b *Book) Put(l core.Link) error {
 	}
 	next[l.DiscordID] = l
 	if err := b.save(next); err != nil {
-		return err
+		return nil, false, err
 	}
 	if old, ok := b.byDiscord[l.DiscordID]; ok {
 		delete(b.byUser, old.UserID)
+		moved = old.UserID != l.UserID
 	}
 	b.byDiscord = next
 	b.byUser[l.UserID] = l.DiscordID
-	return nil
+	return b.onChange, moved, nil
 }
 
 // Remove deletes the link for a Discord member. Removing a member with no
 // link is not an error.
 func (b *Book) Remove(discordID string) error {
+	fn, removed, err := b.remove(discordID)
+	if err != nil {
+		return err
+	}
+	if removed {
+		b.notify(fn, discordID, core.EventLinkRemoved)
+	}
+	return nil
+}
+
+func (b *Book) remove(discordID string) (fn func(core.Event), removed bool, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	old, ok := b.byDiscord[discordID]
 	if !ok {
-		return nil
+		return nil, false, nil
 	}
 	next := make(map[string]core.Link, len(b.byDiscord))
 	for k, v := range b.byDiscord {
@@ -153,11 +200,11 @@ func (b *Book) Remove(discordID string) error {
 		}
 	}
 	if err := b.save(next); err != nil {
-		return err
+		return nil, false, err
 	}
 	b.byDiscord = next
 	delete(b.byUser, old.UserID)
-	return nil
+	return b.onChange, true, nil
 }
 
 func (b *Book) sorted(m map[string]core.Link) []core.Link {

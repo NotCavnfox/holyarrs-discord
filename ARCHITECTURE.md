@@ -46,19 +46,22 @@ Rules:
 | `internal/selfcheck` | Read-only startup pass over the `HolyArrs` reads and the Discord probe; one log line per check, counts only |
 | `internal/app` | Event bus (fan-out, drop when slow), interaction router, feature runner, shutdown |
 | `internal/features/linking` | `/link`, `/unlink`, `/whoami`, `/link-admin`, the link reconcile loop, Linked role, the plugin page, the Home widget |
-| `internal/postergrid` | Draws up to 9 posters as one 3x3 JPEG (900x1338); decodes JPEG, PNG and WebP, refuses oversized pictures, draws the title in a cell with no poster |
+| `internal/postergrid` | Draws up to 9 posters as one 3x3 JPEG (900x1338); decodes JPEG, PNG and WebP one at a time, refuses pictures over 2 megapixels before decoding, draws the title in a cell with no poster |
 | `internal/features/dashboard` | Self-updating tiles: one pinned message per tile, edited in place; the poster grids of Recently added and Coming up |
 | `internal/features/announce` | New-title posts; ready DMs to whoever asked for the title and has alerts on |
-| `internal/features/requests` | `/status`, `/request`, `/search`, `/privacy`; approved/declined DMs for bot-made requests |
+| `internal/features/requests` | `/status`, `/request`, `/search`, `/privacy`; approved/declined DMs for bot-made requests to members with alerts on; forgets a member's requests when their link goes |
 | `internal/features/vote` (1.1) | `/purge-vote`, ballots, admin confirm, audit log |
 | `internal/features/fun` (1.2) | recaps, leaderboards, movie night, games, roles |
 
 ## Runtime
 
 `main` -> config -> store -> links -> adapters -> features -> `app.Run`:
-1. `app` collects every feature's commands and opens Discord with them.
-2. One goroutine pumps `HolyArrs.Events` (stdin lines) into the bus; each feature gets its own channel.
-3. Each feature's `Run` gets its own goroutine. A feature that fails is logged and restarted
+1. One goroutine pumps `HolyArrs.Events` (stdin lines) into the bus; each feature gets its own
+   channel. It starts first, because reading stdin is also how a stop is noticed.
+2. `app` collects every feature's commands and opens Discord with them. A failed open (network
+   or DNS blip, bad token) is logged and tried again with backoff (1 s doubling to 2 min) until
+   it works or the plugin is stopped; the process never exits over it.
+3. Once Discord is open each feature's `Run` gets its own goroutine. A feature that fails is logged and restarted
    with backoff; it never takes the others down.
 4. Slash commands go to the owning `Command.Handle`. Button presses go to the feature named by
    the `CustomID` prefix (`"<feature>:<action>[:<arg>]"`).
@@ -72,12 +75,17 @@ Rules:
 | `pending.json` | linking | Discord id and expiry of each code that is waiting to be typed (never the code) |
 | `tiles.json` | dashboard | message id per tile, last content hash, poster retry count |
 | `announced.json` | announce | announced and pinged keys (dedupe across restarts) |
-| `myrequests.json` | requests | requests made through the bot, per member |
+| `myrequests.json` | requests | requests made through the bot, per member, each with the HolyArrs user it was made as; a member's entries go when their link goes |
 | `votes.json` | vote | open and closed ballots |
 
 Everything is rebuildable. Links are rebuilt from HolyArrs on the next reconcile pass, but the
 privacy choice is then back to hidden and alerts back to on; a lost tile file just makes new
-messages.
+messages. `store.New` removes `*.tmp` files a killed save left behind.
+
+The link book publishes `link.changed` and `link.removed` on the bus after every saved change
+(`main` wires `Book.OnChange` to `Bus.Publish`). The dashboard redraws on both, so a name leaves
+Top watchers within seconds of `/privacy show_watching:off` or an unlink; the requests feature
+drops the member's stored requests on `link.removed`.
 
 ## Linking
 
@@ -97,8 +105,8 @@ privacy choice.
    - A link in HolyArrs whose external id is not linked in the bot is adopted: the name comes
      from `Users` (the id as text if the user is not listed), the link is saved with the name
      hidden from watch activity and alerts on, the pending entry is dropped, the Linked role is
-     given and the member gets a DM. The DM says they will get a message each time one of their
-     requests is available and that `/privacy alerts:off` turns that off. No pending entry is needed, because the external id can only come from a
+     given and the member gets a DM. The DM says they will get a message when a request of theirs
+     is approved, declined or available and that `/privacy alerts:off` turns these off. No pending entry is needed, because the external id can only come from a
      code this plugin asked for. External ids that are not 15 to 21 digits are ignored.
    - HolyArrs keeps one link per user, so two users can hold the same Discord id. The bot keeps
      the one it already has, else the oldest (lowest user id on a tie), and calls `RemoveLink`
@@ -133,8 +141,11 @@ attached to the tile message and shown through the embed image (`attachment://ad
 right, top to bottom), so the tile reads without the picture. An empty tile stays text only.
 
 1. The tile hash covers the text plus each cell's title id and poster reference. When it equals
-   the saved hash, nothing is read, drawn or uploaded.
-2. Otherwise each distinct stored poster is read once through `HolyArrs.Artwork`. A title with no
+   the saved hash, nothing is read, drawn or uploaded, and no Discord call is made: a tile message
+   deleted in Discord is noticed only when the content next changes. `/dashboard refresh` skips
+   this check and draws every tile, so it also puts a deleted tile back.
+2. Otherwise each distinct stored poster is read once through `HolyArrs.Thumbnail`: HolyArrs's
+   own 250 px JPEG (`?size=250`), at most 1 MB. A title with no
    stored poster, a missing or oversized picture, or one that does not decode gets a dark cell
    with its name. Cells past the last title stay empty.
 3. `postergrid.Compose` draws the JPEG (quality 85, well under 1 MB) and the message is edited in
@@ -164,15 +175,19 @@ right, top to bottom), so the tile reads without the picture. An empty tile stay
   off on 429. Dashboard reads are cached per refresh so tiles share one fetch.
 - Discord: edits to tiles only when the rendered content hash changes.
 - 512 MiB, 1 CPU: no in-memory library copy. Posters are read only when a grid tile changed, 3 at
-  a time, at most 5 MB each with a 20 s limit, and decoded one at a time (12 megapixels at most).
+  a time, as HolyArrs's 250 px copies (at most 1 MB each, 20 s limit), and decoded and scaled one
+  at a time (2 megapixels at most, checked before decoding). Nine pictures of that largest size
+  peak near 90 MiB of process memory; nine real small posters near 20 MiB.
 - No UDP: no voice features.
 
 ## Privacy and safety
 
 - A person's name appears next to watch activity only when their link has `ShowWatching`.
-- The "available" DM goes to a linked person unless their link has `AlertsOff` (`/privacy alerts:off`).
-- Deletion (1.1) needs an admin button press in Discord for each run and is logged to the mod channel.
+- The approved, declined and "available" DMs go to a linked person unless their link has
+  `AlertsOff` (`/privacy alerts:off`).
 - The bot token lives only in the secret setting; it is never written to disk or logs.
+- Logs are counts only: no Discord ids, HolyArrs user ids, guild, channel or role ids, and no
+  invite link. The start-up line shows set/unset for each of them.
 - Text from HolyArrs and Discord is data. Titles are escaped before they go into messages.
 
 ## Testing

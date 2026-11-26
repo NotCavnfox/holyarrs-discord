@@ -30,7 +30,7 @@ const (
 	gridCells      = postergrid.Cells // titles on a poster-grid tile
 	posterFetchers = 3                // poster reads at once
 	posterTimeout  = 20 * time.Second // per poster read
-	maxPosterBytes = 5 << 20          // larger pictures are not drawn
+	maxPosterBytes = 1 << 20          // larger pictures are not drawn; a small poster is under 100 KB
 	// posterRetries is how many later refreshes try again when a poster read
 	// failed for a reason that may pass. After that the tile stays as it is
 	// until its content changes.
@@ -127,14 +127,17 @@ func (f *Feature) handleRefresh(ctx context.Context, in *core.Interaction) error
 		return err
 	}
 	text := "Dashboard refreshed."
-	if err := f.Refresh(ctx); err != nil {
+	// Forced: every tile is drawn and sent again, so a tile message that was
+	// deleted in Discord comes back even when its content did not change.
+	if err := f.refresh(ctx, true); err != nil {
 		f.d.Log.Warn("dashboard: manual refresh", "err", err)
 		text = "Some tiles could not be refreshed. Details are in the log."
 	}
 	return f.d.DC.FollowUp(ctx, in, core.Message{Content: text}, true)
 }
 
-// Run refreshes on a timer and, debounced, on library and request events.
+// Run refreshes on a timer and, debounced, on library, request and link
+// events (a link change can add or remove a name on Top watchers).
 func (f *Feature) Run(ctx context.Context) error {
 	if !f.enabled() {
 		<-ctx.Done()
@@ -185,7 +188,8 @@ func (f *Feature) Run(ctx context.Context) error {
 func relevant(t core.EventType) bool {
 	switch t {
 	case core.EventTitleAdded, core.EventRequestCreated, core.EventRequestApproved,
-		core.EventRequestAvailable, core.EventRequestDeclined:
+		core.EventRequestAvailable, core.EventRequestDeclined,
+		core.EventLinkChanged, core.EventLinkRemoved:
 		return true
 	}
 	return false
@@ -211,7 +215,10 @@ func (f *Feature) load() {
 
 // Refresh renders every tile and sends, edits or skips each one. A tile that
 // fails is reported in the returned error; the others still update.
-func (f *Feature) Refresh(ctx context.Context) error {
+func (f *Feature) Refresh(ctx context.Context) error { return f.refresh(ctx, false) }
+
+// refresh is Refresh; with force no tile is skipped for being unchanged.
+func (f *Feature) refresh(ctx context.Context, force bool) error {
 	if !f.enabled() {
 		return nil
 	}
@@ -279,7 +286,7 @@ func (f *Feature) Refresh(ctx context.Context) error {
 		msg := core.Message{Embeds: []core.Embed{clampEmbed(e)}}
 		h := hashTile(msg, grid) // before Time is set: the clock must not force an edit
 		st := f.doc.Tiles[t.key]
-		if st.MessageID != "" && st.Hash == h && (st.Retries == 0 || st.Retries >= posterRetries) {
+		if !force && st.MessageID != "" && st.Hash == h && (st.Retries == 0 || st.Retries >= posterRetries) {
 			continue // nothing changed: no poster reads, no upload
 		}
 		retries := 0
@@ -320,8 +327,9 @@ func (f *Feature) Refresh(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// composeGrid reads the posters of a grid tile, at most posterFetchers at
-// once, and draws them as one JPEG. A title with no stored poster, or whose
+// composeGrid reads the posters of a grid tile at HolyArrs's small size, at
+// most posterFetchers at once, and draws them as one JPEG. Only the small
+// encoded pictures are held together; postergrid decodes one at a time. A title with no stored poster, or whose
 // poster cannot be read or used, gets a cell with its name. failed counts the
 // reads that failed for a reason that may pass (not "no such picture" and not
 // "no permission"), so the caller can try again later.
@@ -357,7 +365,7 @@ func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) 
 			defer func() { <-slots }()
 			c, cancel := context.WithTimeout(ctx, posterTimeout)
 			defer cancel()
-			data, _, err := f.d.HA.Artwork(c, ref)
+			data, _, err := f.d.HA.Thumbnail(c, ref)
 			if err == nil && len(data) > maxPosterBytes {
 				data, err = nil, core.ErrNotFound // too large to draw; trying again will not help
 			}

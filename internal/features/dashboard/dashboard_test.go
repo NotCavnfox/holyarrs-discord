@@ -474,9 +474,9 @@ type slowArt struct {
 	enter func()
 }
 
-func (s *slowArt) Artwork(ctx context.Context, ref string) ([]byte, string, error) {
+func (s *slowArt) Thumbnail(ctx context.Context, ref string) ([]byte, string, error) {
 	s.enter()
-	return s.fakeHA.Artwork(ctx, ref)
+	return s.fakeHA.Thumbnail(ctx, ref)
 }
 
 func TestRecreateWhenMessageDeleted(t *testing.T) {
@@ -819,4 +819,99 @@ func (e *countingEvents) names() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]string(nil), e.subs...)
+}
+
+// A tile deleted in Discord whose content did not change is not looked at by
+// the timed refresh (it makes no Discord call for an unchanged tile), but
+// /dashboard refresh draws every tile again and so puts it back.
+func TestManualRefreshRecreatesDeletedTile(t *testing.T) {
+	r := gridRig(t, 2)
+	f := New(r.deps)
+	ctx := context.Background()
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sends, _, _, _, _ := r.dc.snap()
+	if len(sends) != 4 {
+		t.Fatalf("sends = %d", len(sends))
+	}
+	gone := sends[0].ID // the Recently added tile, with its poster grid
+	r.dc.mu.Lock()
+	r.dc.editErr[gone] = fmt.Errorf("wrapped: %w", core.ErrNotFound)
+	r.dc.mu.Unlock()
+
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sends, edits, _, _, _ := r.dc.snap(); len(sends) != 4 || len(edits) != 0 {
+		t.Fatalf("unchanged timed refresh: sends=%d edits=%d", len(sends), len(edits))
+	}
+
+	h := f.Commands()[0].Sub[0].Handle
+	if err := h(ctx, &core.Interaction{UserID: "x", IsAdmin: true}); err != nil {
+		t.Fatal(err)
+	}
+	sends, edits, _, pins, _ := r.dc.snap()
+	if len(sends) != 5 || len(edits) != 3 || len(pins) != 5 {
+		t.Fatalf("manual refresh: sends=%d edits=%d pins=%d, want 5, 3, 5", len(sends), len(edits), len(pins))
+	}
+	if sends[4].Msg.Embeds[0].Title != "Recently added" || pins[4] != sends[4].ID {
+		t.Fatalf("new tile: %+v", sends[4].Msg.Embeds[0])
+	}
+	if img := gridImage(t, sends[4]); !cellIsPoster(img, 0) || !cellIsPoster(img, 1) {
+		t.Error("the new tile has no posters")
+	}
+	// The grid is drawn from the small posters only, never the full-size ones.
+	if r.ha.count("artwork") != 4 || r.ha.count("artwork-full") != 0 {
+		t.Errorf("small poster reads = %d, full-size reads = %d", r.ha.count("artwork"), r.ha.count("artwork-full"))
+	}
+	if rp := r.dc.lastReply(); rp.Kind != "followup" || rp.Msg.Content != "Dashboard refreshed." {
+		t.Fatalf("reply = %+v", rp)
+	}
+	var doc tilesDoc
+	_ = r.store.Load(storeDoc, &doc)
+	if doc.Tiles[tileAdded].MessageID != sends[4].ID {
+		t.Fatalf("state not updated: %+v", doc.Tiles[tileAdded])
+	}
+}
+
+// Turning show_watching off, or unlinking, reaches the dashboard as a link
+// event: the name leaves Top watchers without waiting for the timer.
+func TestRunRefreshesOnLinkEvents(t *testing.T) {
+	for _, typ := range []core.EventType{core.EventLinkChanged, core.EventLinkRemoved} {
+		t.Run(string(typ), func(t *testing.T) {
+			r := newRig(onCfg())
+			seed(r)
+			f := New(r.deps)
+			f.debounce = 5 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- f.Run(ctx) }()
+			if !waitFor(func() bool { s, _, _, _, _ := r.dc.snap(); return len(s) == 4 }) {
+				t.Fatal("initial tiles not sent")
+			}
+			sends, _, _, _, _ := r.dc.snap()
+			if top := byTitle(sends)["Top watchers"].Description; !strings.Contains(top, "<@1001>") {
+				t.Fatalf("seed: %q", top)
+			}
+			if typ == core.EventLinkRemoved {
+				_ = r.links.Remove("1001")
+			} else {
+				_ = r.links.Put(core.Link{DiscordID: "1001", UserID: "u1", UserName: "Alice", ShowWatching: false})
+			}
+			r.ev.ch <- core.Event{Type: typ, Member: "1001"}
+			if !waitFor(func() bool { _, e, _, _, _ := r.dc.snap(); return len(e) == 1 }) {
+				t.Fatal("link event did not cause a refresh")
+			}
+			_, edits, _, _, _ := r.dc.snap()
+			if e := edits[0].Msg.Embeds[0]; e.Title != "Top watchers" || strings.Contains(e.Description, "1001") {
+				t.Fatalf("edit = %q %q", e.Title, e.Description)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }

@@ -434,7 +434,7 @@ func TestAdoptWithoutPendingEntry(t *testing.T) {
 		t.Fatalf("link %q, dms %v, roles %s", r.linkOf(dB), r.dms(), r.roles(t))
 	}
 	// The DM says what linking turns on and how to turn it off.
-	wantContains(t, r.dms()[0].text, "You are now linked", "each time one of your requests is available", "/privacy alerts:off")
+	wantContains(t, r.dms()[0].text, "You are now linked", "a request of yours is approved, declined or available", "/privacy alerts:off")
 	if l, _ := r.lk.ByDiscord(dB); l.AlertsOff || l.ShowWatching {
 		t.Errorf("new link = %+v, want alerts on and the name hidden", l)
 	}
@@ -923,7 +923,7 @@ func TestLinkAdminRemove(t *testing.T) {
 	if r.removed() != "7" || r.linkOf(dA) != "" || r.linkOf(dB) != "9" || r.roles(t) != "remove:"+dA {
 		t.Fatalf("removed %q, A=%q, B=%q, roles %s", r.removed(), r.linkOf(dA), r.linkOf(dB), r.roles(t))
 	}
-	wantContains(t, r.log.String(), "by="+dC)
+	wantContains(t, r.log.String(), "linking: unlinked", "by_admin=true", "linked=1")
 
 	wantContains(t, r.run(t, "link-admin remove", dC, true, map[string]string{"member": dA}), "<@"+dA+"> is not linked")
 	for _, bad := range []string{"", "everyone", "@" + dB} {
@@ -1180,5 +1180,36 @@ func TestOlder(t *testing.T) {
 	c := core.RemoteLink{UserID: "9", CreatedAt: at(1)}
 	if !older(a, b) || older(b, a) || !older(c, a) || older(a, c) || older(a, a) {
 		t.Error("older: earliest first, then the lowest user id as a number")
+	}
+}
+
+// Counts only: no Discord id and no HolyArrs user id reaches the log, on the
+// happy paths and on the failing ones.
+func TestLogsHoldNoIDs(t *testing.T) {
+	r := newRig(t)
+	r.remote(core.RemoteLink{UserID: "7001", External: dA, CreatedAt: at(0)},
+		core.RemoteLink{UserID: "7002", External: dA, CreatedAt: at(1)}, // a second user on one member
+		core.RemoteLink{UserID: "7003", External: dB, CreatedAt: at(0)})
+	r.reconcile()                      // adopts both, removes the duplicate
+	r.run(t, "unlink", dA, false, nil) // by the member
+	r.run(t, "link-admin remove", dC, true, map[string]string{"member": dB})
+	r.remote()
+	r.put(t, core.Link{DiscordID: dC, UserID: "7004", UserName: "Zed"})
+	r.reconcile() // gone in HolyArrs
+	r.put(t, core.Link{DiscordID: dA, UserID: "7005", UserName: "Kim"})
+	r.ha.SetErr("RemoveLink", errors.New("boom"))
+	r.run(t, "unlink", dA, false, nil) // fails in HolyArrs
+	r.dc.SetErr("DM", errors.New("dm failed"))
+	r.dc.SetErr("AddRole", errors.New("role failed"))
+	r.ha.SetErr("RemoveLink", nil)
+	r.remote(core.RemoteLink{UserID: "7006", External: dB, CreatedAt: at(0)})
+	r.reconcile()
+
+	out := r.log.String()
+	wantContains(t, out, "linking: linked", "linking: unlinked", "by_admin=true", "gone in HolyArrs", "not removed in HolyArrs", "linking: dm")
+	for _, id := range []string{dA, dB, dC, "7001", "7002", "7003", "7004", "7005", "7006", "discord=", "user="} {
+		if strings.Contains(out, id) {
+			t.Errorf("the log holds %q:\n%s", id, out)
+		}
 	}
 }

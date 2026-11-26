@@ -116,11 +116,20 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 type call struct {
 	method  string
 	path    string // without the query; this is what errors name
+	errPath string // named in errors and logs instead of path, when path holds a user id
 	query   url.Values
 	body    any           // sent as JSON when not nil
 	forUser core.UserID   // sets X-Holyarrs-For-User
 	timeout time.Duration // 0: the default call timeout
 	limit   int64         // 0: maxBody
+}
+
+// shown is the path for errors and logs: they are counts only, no user ids.
+func (cl call) shown() string {
+	if cl.errPath != "" {
+		return cl.errPath
+	}
+	return cl.path
 }
 
 type reply struct {
@@ -167,7 +176,7 @@ func (c *Client) fail(cl call, err error) error {
 	if errors.As(err, &ue) {
 		err = ue.Err // drop the URL: the path is named below
 	}
-	return fmt.Errorf("holyarrs: %s %s: %w", cl.method, cl.path, err)
+	return fmt.Errorf("holyarrs: %s %s: %w", cl.method, cl.shown(), err)
 }
 
 // do sends cl, waiting for a free slot and the per-minute budget, and retries
@@ -188,7 +197,7 @@ func (c *Client) do(ctx context.Context, cl call) (*reply, error) {
 		if rep.status != http.StatusTooManyRequests {
 			return c.finish(cl, rep)
 		}
-		ae := &apiError{method: cl.method, path: cl.path, status: rep.status, msg: errorText(rep.body), body: rep.body, kind: core.ErrRateLimited}
+		ae := &apiError{method: cl.method, path: cl.shown(), status: rep.status, msg: errorText(rep.body), body: rep.body, kind: core.ErrRateLimited}
 		if hasField(rep.body, "per_week") {
 			// The person's own weekly request limit: waiting does not help.
 			ae.kind = core.ErrLimit
@@ -201,7 +210,7 @@ func (c *Client) do(ctx context.Context, cl call) (*reply, error) {
 		if wait <= 0 {
 			wait = c.jitter(c.backoff[attempt])
 		}
-		c.log.Debug("holyarrs: rate limited, waiting", "method", cl.method, "path", cl.path, "wait", wait)
+		c.log.Debug("holyarrs: rate limited, waiting", "method", cl.method, "path", cl.shown(), "wait", wait)
 		if err := c.sleep(ctx, wait); err != nil {
 			return nil, c.fail(cl, err)
 		}
@@ -212,7 +221,7 @@ func (c *Client) finish(cl call, rep *reply) (*reply, error) {
 	if rep.status >= 200 && rep.status < 300 {
 		return rep, nil
 	}
-	ae := &apiError{method: cl.method, path: cl.path, status: rep.status, msg: errorText(rep.body), body: rep.body}
+	ae := &apiError{method: cl.method, path: cl.shown(), status: rep.status, msg: errorText(rep.body), body: rep.body}
 	switch rep.status {
 	case http.StatusForbidden:
 		ae.kind = core.ErrForbidden

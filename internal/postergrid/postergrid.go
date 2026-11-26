@@ -36,9 +36,11 @@ const (
 
 	quality = 85
 
-	// MaxPixels is the largest poster that is decoded. A 2000x3000 poster is
-	// 6 million; decoding one of 12 million takes about 50 MB for a moment.
-	MaxPixels = 12_000_000
+	// MaxPixels is the largest poster that is decoded. The grid is drawn from
+	// HolyArrs's small posters (250 px a side, about 0.04 million pixels), so
+	// 2 million is generous. Decoding one of that size takes 3 MB (JPEG) to
+	// 16 MB (16-bit PNG) for a moment; a cell is only 292x438.
+	MaxPixels = 2_000_000
 	maxSide   = 8000
 
 	textScale = 2 // the 7x13 font drawn at 14x26

@@ -209,6 +209,9 @@ func TestRequestsAreRemembered(t *testing.T) {
 		list[0].ID != want.ID || list[0].Name != want.Name || list[0].Year != want.Year || list[0].Kind != want.Kind || list[0].TitleID != want.TitleID || list[0].Status != want.Status {
 		t.Errorf("newest = %+v, want %+v", list[0], want)
 	}
+	if list[0].User != "u1" || list[1].User != "u1" {
+		t.Errorf("the HolyArrs user is not stored: %+v", list)
+	}
 	if list[1].ID != "new-1" || list[1].Name != "First" || list[1].Year != 2001 || list[1].Kind != core.KindMovie ||
 		list[1].Status != core.RequestPending || !list[1].At.Equal(r.clock.Now().Add(-time.Hour)) {
 		t.Errorf("older = %+v", list[1])
@@ -292,6 +295,8 @@ func TestRequestEvents(t *testing.T) {
 			if err := r.store.Save(storeDoc, seed()); err != nil {
 				t.Fatal(err)
 			}
+			_ = r.links.Put(core.Link{DiscordID: "d2", UserID: "u2"})
+			_ = r.links.Put(core.Link{DiscordID: "d3", UserID: "u3"})
 			r.dc.dmErr["d2"] = fmt.Errorf("closed: %w", core.ErrForbidden) // ignored
 			f := New(r.deps)
 			ctx := context.Background()
@@ -325,6 +330,101 @@ func TestRequestEvents(t *testing.T) {
 				t.Errorf("title id not learned from the event: %+v", doc["d1"][0])
 			}
 		})
+	}
+}
+
+// /privacy alerts:off covers every request DM, and nobody is told about a
+// request they are not (or no longer) linked for. The stored state still
+// follows the events.
+func TestRequestDMsRespectAlertsAndLinks(t *testing.T) {
+	for _, typ := range []core.EventType{core.EventRequestApproved, core.EventRequestDeclined} {
+		t.Run(string(typ), func(t *testing.T) {
+			r := onRig()
+			_ = r.links.Put(core.Link{DiscordID: "d2", UserID: "u2", AlertsOff: true})
+			_ = r.links.Put(core.Link{DiscordID: "d4", UserID: "u4"})
+			_ = r.store.Save(storeDoc, map[string][]myRequest{
+				"d1": {{ID: "r1", User: "u1", Name: "X", Status: core.RequestPending}},
+				"d2": {{ID: "r1", User: "u2", Name: "X", Status: core.RequestPending}},    // alerts off
+				"d3": {{ID: "r1", User: "u3", Name: "X", Status: core.RequestPending}},    // not linked
+				"d4": {{ID: "r1", User: "u-old", Name: "X", Status: core.RequestPending}}, // linked to another user since
+			})
+			New(r.deps).handleEvent(context.Background(), core.Event{Type: typ, RequestID: "r1"})
+			_, _, dms, _, _ := r.dc.snap()
+			if len(dms) != 1 || dms[0].Channel != "d1" {
+				t.Fatalf("dms = %+v, want one, to d1", dms)
+			}
+			if st := storedDoc(t, r)["d2"][0].Status; st == core.RequestPending {
+				t.Errorf("alerts off stopped the status update: %s", st)
+			}
+		})
+	}
+}
+
+// A removed link (by /unlink, /link-admin remove, or in HolyArrs) drops the
+// member's stored requests, so linking to another HolyArrs user never shows
+// the old user's requests.
+func TestUnlinkForgetsRequests(t *testing.T) {
+	r := onRig()
+	_ = r.store.Save(storeDoc, map[string][]myRequest{
+		"d1": {{ID: "r1", User: "u1", Name: "Old user's", Status: core.RequestPending}, {ID: "r0", Name: "Before users were stored", Status: core.RequestPending}},
+		"d2": {{ID: "r2", User: "u2", Name: "Theirs", Status: core.RequestPending}},
+	})
+	f := New(r.deps)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+
+	_ = r.links.Remove("d1")
+	r.ev.ch <- core.Event{Type: core.EventLinkRemoved, Member: "d1"}
+	if !waitFor(func() bool { _, ok := storedDoc(t, r)["d1"]; return !ok }) {
+		t.Fatalf("requests kept after the unlink: %+v", storedDoc(t, r))
+	}
+	if doc := storedDoc(t, r); len(doc["d2"]) != 1 {
+		t.Fatalf("another member's requests were touched: %+v", doc)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	_ = r.links.Put(core.Link{DiscordID: "d1", UserID: "u9", UserName: "Zed"})
+	call(t, f, "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; strings.Contains(e.Description, "Old user") || strings.Contains(e.Description, "Before users") {
+		t.Fatalf("/status after a relink shows the old user's requests: %q", e.Description)
+	}
+}
+
+// When the removal is handled only after the member is linked again, what
+// they asked for as the new user stays and the rest goes; and /status never
+// lists a request made as another user, even one that is still stored.
+func TestRelinkKeepsOnlyTheNewUsersRequests(t *testing.T) {
+	r := onRig() // d1 is linked to u1
+	_ = r.store.Save(storeDoc, map[string][]myRequest{"d1": {
+		{ID: "new", User: "u1", Name: "Mine now", Status: core.RequestPending},
+		{ID: "old", User: "u0", Name: "Old user's", Status: core.RequestPending},
+		{ID: "legacy", Name: "No user stored", Status: core.RequestPending},
+	}})
+	f := New(r.deps)
+	call(t, f, "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; strings.Contains(e.Description, "Old user") || !strings.Contains(e.Description, "Mine now") {
+		t.Fatalf("/status = %q", e.Description)
+	}
+	f.handleEvent(context.Background(), core.Event{Type: core.EventLinkRemoved, Member: "d1"})
+	if list := storedDoc(t, r)["d1"]; len(list) != 1 || list[0].ID != "new" {
+		t.Fatalf("stored after the removal = %+v", list)
+	}
+	f.handleEvent(context.Background(), core.Event{Type: core.EventLinkRemoved}) // no member: nothing happens
+	if list := storedDoc(t, r)["d1"]; len(list) != 1 {
+		t.Fatalf("stored = %+v", list)
+	}
+}
+
+func TestStatusDoesNotSuggestRequestWhenOff(t *testing.T) {
+	r := newRig(core.Config{EnableRequests: false})
+	_ = r.links.Put(core.Link{DiscordID: "d1", UserID: "u1", UserName: "Alice"})
+	call(t, New(r.deps), "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; e.Description != "Nothing is in progress." {
+		t.Fatalf("description = %q", e.Description)
 	}
 }
 

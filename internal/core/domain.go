@@ -6,10 +6,7 @@
 // features. Only main wires concrete types together.
 package core
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 // UserID is a HolyArrs user id, kept as text so the wire type can change.
 type UserID string
@@ -109,16 +106,9 @@ type SearchResult struct {
 	InLibrary bool
 }
 
-// CleanupCandidate is a title HolyArrs suggests could be deleted.
-type CleanupCandidate struct {
-	Title       Title
-	SizeBytes   int64
-	LastWatched time.Time
-	AskedBy     []UserID
-}
-
 // EventType names the events features react to. Adapters map wire names onto
-// these; anything else arrives as EventOther with Raw set.
+// these; anything else arrives as EventOther with its WireType. The link
+// events are the bot's own: the link book publishes them (see main).
 type EventType string
 
 const (
@@ -128,17 +118,21 @@ const (
 	EventRequestAvailable EventType = "request.available"
 	EventRequestDeclined  EventType = "request.declined"
 	EventOther            EventType = "other"
+	// EventLinkChanged: a link was added or its choices changed.
+	// EventLinkRemoved: a member's link is gone. Both carry Member only.
+	EventLinkChanged EventType = "link.changed"
+	EventLinkRemoved EventType = "link.removed"
 )
 
-// Event is something that happened in HolyArrs. Events carry ids only; look
-// the rest up through the HolyArrs port.
+// Event is something that happened in HolyArrs, or to a link. Events carry
+// ids only; look the rest up through the HolyArrs port or the link book.
 type Event struct {
 	Type      EventType
 	WireType  string
 	TitleID   TitleID
 	RequestID string
 	At        time.Time
-	Raw       json.RawMessage
+	Member    string // Discord id; set on link events only
 }
 
 // RemoteLink is one link as HolyArrs holds it for this plugin. External is the
@@ -169,7 +163,6 @@ type Config struct {
 	InviteURL        string
 	DashboardChannel string
 	AnnounceChannel  string
-	ModChannel       string
 	AdminRoleID      string
 	LinkedRoleID     string
 	RefreshEvery     time.Duration

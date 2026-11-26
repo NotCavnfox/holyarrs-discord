@@ -397,11 +397,10 @@ func (f *Feature) apply(ctx context.Context, remote []core.RemoteLink) {
 				continue
 			}
 			if err := f.d.HA.RemoveLink(ctx, r.UserID); err != nil {
-				f.d.Log.Warn("linking: duplicate link not removed in HolyArrs", "discord", id, "user", r.UserID, "err", err)
+				f.d.Log.Warn("linking: duplicate link not removed in HolyArrs", "err", err)
 				continue
 			}
-			f.d.Log.Info("linking: removed a second HolyArrs user linked to one Discord member",
-				"discord", id, "user", r.UserID, "kept", g[win].UserID)
+			f.d.Log.Info("linking: removed a second HolyArrs user linked to one Discord member", "linked", len(f.d.Links.All()))
 		}
 	}
 
@@ -411,11 +410,11 @@ func (f *Feature) apply(ctx context.Context, remote []core.RemoteLink) {
 			continue
 		}
 		if err := f.d.Links.Remove(l.DiscordID); err != nil {
-			f.d.Log.Error("linking: remove stale link", "discord", l.DiscordID, "err", err)
+			f.d.Log.Error("linking: remove stale link", "err", err)
 			continue
 		}
 		f.removeRole(ctx, l.DiscordID)
-		f.d.Log.Info("linking: link removed, gone in HolyArrs", "discord", l.DiscordID, "user", l.UserID)
+		f.d.Log.Info("linking: link removed, gone in HolyArrs", "linked", len(f.d.Links.All()))
 	}
 
 	// Links HolyArrs holds that the bot does not know yet. The external id can
@@ -457,19 +456,19 @@ func (f *Feature) adopt(ctx context.Context, discordID string, r core.RemoteLink
 		LinkedAt:     f.d.Now(),
 	}
 	if err := f.d.Links.Put(l); err != nil {
-		f.d.Log.Error("linking: save link", "discord", discordID, "user", r.UserID, "err", err)
+		f.d.Log.Error("linking: save link", "err", err)
 		return
 	}
 	f.dropPending(discordID)
 	if role := f.d.Cfg.LinkedRoleID; role != "" {
 		if err := f.d.DC.AddRole(ctx, discordID, role); err != nil {
-			f.d.Log.Warn("linking: add role", "discord", discordID, "err", err)
+			f.d.Log.Warn("linking: add role", "err", err)
 		}
 	}
-	f.d.Log.Info("linking: linked", "discord", discordID, "user", r.UserID)
+	f.d.Log.Info("linking: linked", "linked", len(f.d.Links.All()))
 	f.dm(ctx, discordID, "You are now linked to HolyArrs as **"+escapeMarkdown(name)+
 		"**. Run /whoami to check, /privacy to choose whether your name shows next to what you watch, or /unlink to undo it.\n"+
-		"I will send you a message here each time one of your requests is available on the server. /privacy alerts:off turns that off.")
+		"I will message you here when a request of yours is approved, declined or available. /privacy alerts:off turns these messages off.")
 }
 
 // older reports whether a should be kept over b: the earlier link, and the
@@ -505,14 +504,14 @@ func (f *Feature) removeRole(ctx context.Context, discordID string) {
 		return
 	}
 	if err := f.d.DC.RemoveRole(ctx, discordID, role); err != nil {
-		f.d.Log.Warn("linking: remove role", "discord", discordID, "err", err)
+		f.d.Log.Warn("linking: remove role", "err", err)
 	}
 }
 
 func (f *Feature) dm(ctx context.Context, discordID, text string) {
 	err := f.d.DC.DM(ctx, discordID, core.Message{Content: text})
 	if err != nil && !errors.Is(err, core.ErrForbidden) {
-		f.d.Log.Warn("linking: dm", "discord", discordID, "err", err)
+		f.d.Log.Warn("linking: dm", "err", err)
 	}
 }
 
@@ -525,7 +524,7 @@ func (f *Feature) handleLink(ctx context.Context, in *core.Interaction) error {
 	}
 	text, err := f.link(ctx, in)
 	if err != nil {
-		f.d.Log.Error("linking: /link", "discord", in.UserID, "err", err)
+		f.d.Log.Error("linking: /link", "err", err)
 		text = "Something went wrong on my side. Try /link again in a minute."
 	}
 	return f.d.DC.FollowUp(ctx, in, core.Message{Content: text}, true)
@@ -540,7 +539,7 @@ func (f *Feature) link(ctx context.Context, in *core.Interaction) (string, error
 			"**. Run /unlink first if you want to link a different HolyArrs user.", nil
 	}
 	if !snowflake(in.UserID) {
-		return "", fmt.Errorf("linking: %q is not a Discord user id", in.UserID)
+		return "", errors.New("linking: the caller has no usable Discord user id")
 	}
 	if text := f.checkSupport(ctx); text != "" {
 		return text, nil
@@ -633,15 +632,15 @@ func (f *Feature) unlink(ctx context.Context, discordID, by string) (core.Link, 
 			f.setSupport(supportNo)
 			return l, unlinkUnsupported
 		}
-		f.d.Log.Error("linking: unlink: not removed in HolyArrs", "discord", discordID, "user", l.UserID, "err", err)
+		f.d.Log.Error("linking: unlink: not removed in HolyArrs", "err", err)
 		return l, unlinkFailed
 	}
 	if err := f.d.Links.Remove(discordID); err != nil {
 		// Gone in HolyArrs, still here: the next reconcile pass removes it.
-		f.d.Log.Error("linking: unlink: not removed here", "discord", discordID, "err", err)
+		f.d.Log.Error("linking: unlink: not removed here", "err", err)
 		return l, unlinkFailed
 	}
-	f.d.Log.Info("linking: unlinked", "discord", discordID, "user", l.UserID, "by", by)
+	f.d.Log.Info("linking: unlinked", "by_admin", by != discordID, "linked", len(f.d.Links.All()))
 	f.poke()
 	return l, unlinkDone
 }
@@ -755,9 +754,9 @@ func (f *Feature) handleWhoami(ctx context.Context, in *core.Interaction) error 
 			text += "Privacy: your name is hidden from watch activity."
 		}
 		if l.AlertsOff {
-			text += "\nAlerts: off. You get no message when a request of yours is available."
+			text += "\nAlerts: off. You get no messages about your requests."
 		} else {
-			text += "\nAlerts: on. You get a message when a request of yours is available."
+			text += "\nAlerts: on. You get a message when a request of yours is approved, declined or available."
 		}
 		return reply(text + "\nChange either with /privacy.")
 	}
