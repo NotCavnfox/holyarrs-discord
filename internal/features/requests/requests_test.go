@@ -59,7 +59,7 @@ func TestCommandsByConfig(t *testing.T) {
 	cases := []struct {
 		enabled bool
 		want    string
-	}{{false, "me,privacy"}, {true, "me,privacy,search,request"}}
+	}{{false, "status,privacy"}, {true, "status,privacy,search,request"}}
 	for _, c := range cases {
 		f := New(newRig(core.Config{EnableRequests: c.enabled}).deps)
 		var names []string
@@ -77,7 +77,7 @@ func TestNotLinkedGetsLinkHelp(t *testing.T) {
 		name string
 		run  func(t *testing.T, f *Feature)
 	}{
-		{"me", func(t *testing.T, f *Feature) { call(t, f, "me", "stranger", nil) }},
+		{"status", func(t *testing.T, f *Feature) { call(t, f, "status", "stranger", nil) }},
 		{"privacy", func(t *testing.T, f *Feature) {
 			call(t, f, "privacy", "stranger", map[string]string{"show_watching": "true"})
 		}},
@@ -100,100 +100,66 @@ func TestNotLinkedGetsLinkHelp(t *testing.T) {
 	}
 }
 
-func TestMe(t *testing.T) {
+func TestStatusInProgress(t *testing.T) {
 	r := onRig()
 	now := r.clock.Now()
-	statuses := []core.RequestStatus{core.RequestPending, core.RequestApproved, core.RequestAvailable, core.RequestDeclined, "weird"}
-	doc := map[string][]myRequest{}
-	for i := 0; i < 20; i++ { // newest first, as stored
-		doc["d1"] = append(doc["d1"], myRequest{
-			ID: fmt.Sprint(i), Name: fmt.Sprintf("Mine_%02d", i), Year: 2020, Kind: core.KindMovie,
-			Status: statuses[i%len(statuses)], At: now.Add(-time.Duration(i) * time.Hour),
-		})
-	}
-	doc["d2"] = []myRequest{{ID: "x", Name: "Theirs", Status: core.RequestPending, At: now}}
+	doc := map[string][]myRequest{"d1": { // newest first, as stored
+		{ID: "1", Name: "Waiting_One", Year: 2021, Status: core.RequestPending, At: now},
+		{ID: "2", Name: "Ready", Year: 2020, Status: core.RequestAvailable, At: now.Add(-time.Hour)},
+		{ID: "3", Name: "Approved One", Status: core.RequestApproved, At: now.Add(-2 * time.Hour)},
+		{ID: "4", Name: "Refused", Status: core.RequestDeclined, At: now.Add(-3 * time.Hour)},
+		{ID: "5", Name: "Odd", Status: "weird", At: now.Add(-4 * time.Hour)},
+	}, "d2": {{ID: "x", Name: "Theirs", Status: core.RequestPending, At: now}}}
 	if err := r.store.Save(storeDoc, doc); err != nil {
 		t.Fatal(err)
 	}
-	last := now.Add(-3 * time.Hour)
-	r.ha.people = []core.PersonWatch{
-		{UserID: "u1", UserName: "Alice", Movies: 3, Shows: 2, Episodes: 14, Plays: 20, LastWatched: now.Add(-9 * time.Hour)},
-		{UserID: "u1", UserName: "alice-tv", Movies: 1, Shows: 1, Episodes: 6, Plays: 7, LastWatched: last},
-		{UserID: "u2", UserName: "OtherPerson", Movies: 77777, Plays: 77777},
-		{UserID: "", UserName: "Nobody", Movies: 88888, Plays: 88888},
-	}
-
-	f := New(r.deps)
-	call(t, f, "me", "d1", nil)
+	call(t, New(r.deps), "status", "d1", nil)
 	allEphemeral(t, r)
 	rp := r.dc.lastReply()
-	if rp.Kind != "followup" || len(rp.Msg.Embeds) != 1 {
+	if rp.Kind != "respond" || len(rp.Msg.Embeds) != 1 {
 		t.Fatalf("reply = %+v", rp)
 	}
 	e := rp.Msg.Embeds[0]
-	if e.Title != "Your HolyArrs · Alice" {
-		t.Errorf("title = %q", e.Title)
+	want := "**Waiting\\_One** (2021) · Waiting for approval\n" +
+		"**Approved One** · Approved, not on the server yet\n" +
+		"**Odd** · In progress"
+	if e.Title != "Your requests · Alice" || e.Description != want || e.Footer != textNotListed || len(e.Fields) != 0 {
+		t.Errorf("embed = %+v", e)
 	}
-	all := e.Description
-	var names []string
-	for _, fl := range e.Fields {
-		names = append(names, fl.Name)
-		all += "\n" + fl.Value
-	}
-	if got := strings.Join(names, "|"); got != "Pending (3)|Approved (3)|Available (3)|Declined (3)|Other (3)|Your watching" {
-		t.Errorf("fields = %s", got)
-	}
-	if n := strings.Count(all, "Mine"); n != maxMine {
-		t.Errorf("%d requests shown, want %d", n, maxMine)
-	}
-	if strings.Contains(all, "Mine\\_15") || !strings.Contains(all, "Mine\\_14") {
-		t.Errorf("should keep the 15 newest: %q", all)
-	}
-	pending := e.Fields[0].Value
-	if strings.Index(pending, "Mine\\_00") > strings.Index(pending, "Mine\\_05") || !strings.Contains(pending, "(2020) · Movie · <t:") {
-		t.Errorf("newest first: %q", pending)
-	}
-	for _, bad := range []string{"Theirs", "OtherPerson", "Nobody", "77777", "88888", "alice-tv"} {
-		if strings.Contains(all, bad) {
-			t.Errorf("%q must not be shown", bad)
-		}
-	}
-	want := fmt.Sprintf("Movies: 4 · Shows: 3 · Episodes: 20 · Plays: 27\nLast watched <t:%d:R>", last.Unix())
-	if got := e.Fields[len(e.Fields)-1].Value; got != want {
-		t.Errorf("watching = %q, want %q", got, want)
-	}
-	if !strings.Contains(e.Description, "15 newest requests of 20") || !strings.Contains(e.Description, textNotListed) {
-		t.Errorf("description = %q", e.Description)
+	if r.ha.count("people") != 0 {
+		t.Error("/status asked HolyArrs for watch totals")
 	}
 }
 
-func TestMeEmptyAndErrors(t *testing.T) {
+func TestStatusNothingInProgress(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	var done []myRequest
+	for i := 0; i < 5; i++ { // newest first, as stored
+		done = append(done, myRequest{ID: fmt.Sprint(i), Name: fmt.Sprintf("Done %d", i), Year: 2010 + i,
+			Status: core.RequestAvailable, At: now.Add(-time.Duration(i) * time.Hour)})
+	}
 	cases := []struct {
-		name      string
-		people    []core.PersonWatch
-		peopleErr error
-		watch     string
+		name string
+		mine []myRequest
+		want string
 	}{
-		{"nothing at all", nil, nil, "Nothing watched yet."},
-		{"no last watched", []core.PersonWatch{{UserID: "u1", Plays: 1}}, nil, "Movies: 0 · Shows: 0 · Episodes: 0 · Plays: 1"},
-		{"watch totals fail", nil, errors.New("secret internal detail"), "Couldn't load this right now."},
+		{"last three available", append([]myRequest{{ID: "d", Name: "Refused", Status: core.RequestDeclined, At: now}}, done...),
+			"Nothing is in progress. Your last available requests:\n" +
+				"**Done 0** (2010) · Available\n**Done 1** (2011) · Available\n**Done 2** (2012) · Available"},
+		{"only declined", []myRequest{{ID: "d", Name: "Refused", Status: core.RequestDeclined, At: now}},
+			"Nothing is in progress. Use /request to ask for something."},
+		{"nothing at all", nil, "Nothing is in progress. Use /request to ask for something."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := onRig()
-			r.ha.people, r.ha.peopleErr = c.people, c.peopleErr
-			f := New(r.deps)
-			call(t, f, "me", "d1", nil)
+			if err := r.store.Save(storeDoc, map[string][]myRequest{"d1": c.mine}); err != nil {
+				t.Fatal(err)
+			}
+			call(t, New(r.deps), "status", "d1", nil)
 			allEphemeral(t, r)
-			rp := r.dc.lastReply()
-			if rp.Kind != "followup" || len(rp.Msg.Embeds) != 1 {
-				t.Fatalf("reply = %+v", rp)
-			}
-			e := rp.Msg.Embeds[0]
-			if len(e.Fields) != 1 || e.Fields[0].Name != "Your watching" || e.Fields[0].Value != c.watch {
-				t.Errorf("fields = %+v", e.Fields)
-			}
-			if !strings.Contains(e.Description, "no requests through the bot yet") || !strings.Contains(e.Description, textNotListed) {
+			e := r.dc.lastReply().Msg.Embeds[0]
+			if e.Description != c.want || e.Footer != textNotListed {
 				t.Errorf("description = %q", e.Description)
 			}
 		})
@@ -243,6 +209,9 @@ func TestRequestsAreRemembered(t *testing.T) {
 		list[0].ID != want.ID || list[0].Name != want.Name || list[0].Year != want.Year || list[0].Kind != want.Kind || list[0].TitleID != want.TitleID || list[0].Status != want.Status {
 		t.Errorf("newest = %+v, want %+v", list[0], want)
 	}
+	if list[0].User != "u1" || list[1].User != "u1" {
+		t.Errorf("the HolyArrs user is not stored: %+v", list)
+	}
 	if list[1].ID != "new-1" || list[1].Name != "First" || list[1].Year != 2001 || list[1].Kind != core.KindMovie ||
 		list[1].Status != core.RequestPending || !list[1].At.Equal(r.clock.Now().Add(-time.Hour)) {
 		t.Errorf("older = %+v", list[1])
@@ -254,12 +223,11 @@ func TestRequestsAreRemembered(t *testing.T) {
 		t.Errorf("after asking again: %+v", list)
 	}
 
-	// A new process shows them in /me.
-	call(t, New(r.deps), "me", "d1", nil)
+	// A new process shows them in /status.
+	call(t, New(r.deps), "status", "d1", nil)
 	e := r.dc.lastReply().Msg.Embeds[0]
-	if len(e.Fields) != 3 || e.Fields[0].Name != "Pending (1)" || e.Fields[1].Name != "Approved (1)" ||
-		!strings.Contains(e.Fields[1].Value, "**Second \\(canonical\\)** (2002) · Show") {
-		t.Errorf("fields = %+v", e.Fields)
+	if want := "**Second \\(canonical\\)** (2002) · Approved, not on the server yet\n**First** (2001) · Waiting for approval"; e.Description != want {
+		t.Errorf("description = %q", e.Description)
 	}
 }
 
@@ -327,6 +295,8 @@ func TestRequestEvents(t *testing.T) {
 			if err := r.store.Save(storeDoc, seed()); err != nil {
 				t.Fatal(err)
 			}
+			_ = r.links.Put(core.Link{DiscordID: "d2", UserID: "u2"})
+			_ = r.links.Put(core.Link{DiscordID: "d3", UserID: "u3"})
 			r.dc.dmErr["d2"] = fmt.Errorf("closed: %w", core.ErrForbidden) // ignored
 			f := New(r.deps)
 			ctx := context.Background()
@@ -363,6 +333,101 @@ func TestRequestEvents(t *testing.T) {
 	}
 }
 
+// /privacy alerts:off covers every request DM, and nobody is told about a
+// request they are not (or no longer) linked for. The stored state still
+// follows the events.
+func TestRequestDMsRespectAlertsAndLinks(t *testing.T) {
+	for _, typ := range []core.EventType{core.EventRequestApproved, core.EventRequestDeclined} {
+		t.Run(string(typ), func(t *testing.T) {
+			r := onRig()
+			_ = r.links.Put(core.Link{DiscordID: "d2", UserID: "u2", AlertsOff: true})
+			_ = r.links.Put(core.Link{DiscordID: "d4", UserID: "u4"})
+			_ = r.store.Save(storeDoc, map[string][]myRequest{
+				"d1": {{ID: "r1", User: "u1", Name: "X", Status: core.RequestPending}},
+				"d2": {{ID: "r1", User: "u2", Name: "X", Status: core.RequestPending}},    // alerts off
+				"d3": {{ID: "r1", User: "u3", Name: "X", Status: core.RequestPending}},    // not linked
+				"d4": {{ID: "r1", User: "u-old", Name: "X", Status: core.RequestPending}}, // linked to another user since
+			})
+			New(r.deps).handleEvent(context.Background(), core.Event{Type: typ, RequestID: "r1"})
+			_, _, dms, _, _ := r.dc.snap()
+			if len(dms) != 1 || dms[0].Channel != "d1" {
+				t.Fatalf("dms = %+v, want one, to d1", dms)
+			}
+			if st := storedDoc(t, r)["d2"][0].Status; st == core.RequestPending {
+				t.Errorf("alerts off stopped the status update: %s", st)
+			}
+		})
+	}
+}
+
+// A removed link (by /unlink, /link-admin remove, or in HolyArrs) drops the
+// member's stored requests, so linking to another HolyArrs user never shows
+// the old user's requests.
+func TestUnlinkForgetsRequests(t *testing.T) {
+	r := onRig()
+	_ = r.store.Save(storeDoc, map[string][]myRequest{
+		"d1": {{ID: "r1", User: "u1", Name: "Old user's", Status: core.RequestPending}, {ID: "r0", Name: "Before users were stored", Status: core.RequestPending}},
+		"d2": {{ID: "r2", User: "u2", Name: "Theirs", Status: core.RequestPending}},
+	})
+	f := New(r.deps)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+
+	_ = r.links.Remove("d1")
+	r.ev.ch <- core.Event{Type: core.EventLinkRemoved, Member: "d1"}
+	if !waitFor(func() bool { _, ok := storedDoc(t, r)["d1"]; return !ok }) {
+		t.Fatalf("requests kept after the unlink: %+v", storedDoc(t, r))
+	}
+	if doc := storedDoc(t, r); len(doc["d2"]) != 1 {
+		t.Fatalf("another member's requests were touched: %+v", doc)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	_ = r.links.Put(core.Link{DiscordID: "d1", UserID: "u9", UserName: "Zed"})
+	call(t, f, "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; strings.Contains(e.Description, "Old user") || strings.Contains(e.Description, "Before users") {
+		t.Fatalf("/status after a relink shows the old user's requests: %q", e.Description)
+	}
+}
+
+// When the removal is handled only after the member is linked again, what
+// they asked for as the new user stays and the rest goes; and /status never
+// lists a request made as another user, even one that is still stored.
+func TestRelinkKeepsOnlyTheNewUsersRequests(t *testing.T) {
+	r := onRig() // d1 is linked to u1
+	_ = r.store.Save(storeDoc, map[string][]myRequest{"d1": {
+		{ID: "new", User: "u1", Name: "Mine now", Status: core.RequestPending},
+		{ID: "old", User: "u0", Name: "Old user's", Status: core.RequestPending},
+		{ID: "legacy", Name: "No user stored", Status: core.RequestPending},
+	}})
+	f := New(r.deps)
+	call(t, f, "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; strings.Contains(e.Description, "Old user") || !strings.Contains(e.Description, "Mine now") {
+		t.Fatalf("/status = %q", e.Description)
+	}
+	f.handleEvent(context.Background(), core.Event{Type: core.EventLinkRemoved, Member: "d1"})
+	if list := storedDoc(t, r)["d1"]; len(list) != 1 || list[0].ID != "new" {
+		t.Fatalf("stored after the removal = %+v", list)
+	}
+	f.handleEvent(context.Background(), core.Event{Type: core.EventLinkRemoved}) // no member: nothing happens
+	if list := storedDoc(t, r)["d1"]; len(list) != 1 {
+		t.Fatalf("stored = %+v", list)
+	}
+}
+
+func TestStatusDoesNotSuggestRequestWhenOff(t *testing.T) {
+	r := newRig(core.Config{EnableRequests: false})
+	_ = r.links.Put(core.Link{DiscordID: "d1", UserID: "u1", UserName: "Alice"})
+	call(t, New(r.deps), "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; e.Description != "Nothing is in progress." {
+		t.Fatalf("description = %q", e.Description)
+	}
+}
+
 func TestReplayedApprovalDoesNotUndoAvailable(t *testing.T) {
 	r := onRig()
 	_ = r.store.Save(storeDoc, map[string][]myRequest{"d1": {{ID: "r1", Name: "X", Status: core.RequestAvailable}}})
@@ -387,9 +452,9 @@ func TestRunFollowsEvents(t *testing.T) {
 	if !waitFor(func() bool { _, _, dms, _, _ := r.dc.snap(); return len(dms) == 1 }) {
 		t.Fatal("no DM after an approved event")
 	}
-	call(t, f, "me", "d1", nil)
-	if e := r.dc.lastReply().Msg.Embeds[0]; e.Fields[0].Name != "Approved (1)" {
-		t.Errorf("fields = %+v", e.Fields)
+	call(t, f, "status", "d1", nil)
+	if e := r.dc.lastReply().Msg.Embeds[0]; e.Description != "**X** · Approved, not on the server yet" {
+		t.Errorf("description = %q", e.Description)
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -628,37 +693,59 @@ func TestDisabledButtons(t *testing.T) {
 
 func TestPrivacy(t *testing.T) {
 	cases := []struct {
-		value   string
-		want    bool
-		wantMsg string
+		name       string
+		opts       map[string]string
+		start      core.Link
+		wantShow   bool
+		wantAlerts bool
+		wantMsg    []string
 	}{
-		{"true", true, "will now appear"},
-		{"false", false, "no longer appear"},
-		{"maybe", false, "true or false"},
-		{"", false, "true or false"},
+		{"show on", map[string]string{"show_watching": "true"}, core.Link{}, true, true, []string{"Done.", "shows next to what you watch", "Alerts are on"}},
+		{"show off", map[string]string{"show_watching": "false"}, core.Link{ShowWatching: true}, false, true, []string{"Done.", "hidden from watch activity"}},
+		{"alerts off", map[string]string{"alerts": "off"}, core.Link{ShowWatching: true}, true, false, []string{"Done.", "Alerts are off", "shows next to what you watch"}},
+		{"alerts on", map[string]string{"alerts": "on"}, core.Link{AlertsOff: true}, false, true, []string{"Done.", "Alerts are on"}},
+		{"both", map[string]string{"show_watching": "on", "alerts": "off"}, core.Link{}, true, false, []string{"Done.", "shows next", "Alerts are off"}},
+		{"neither shows the defaults", nil, core.Link{}, false, true, []string{"hidden from watch activity", "Alerts are on", "/privacy alerts"}},
+		{"neither shows what was chosen", map[string]string{}, core.Link{ShowWatching: true, AlertsOff: true}, true, false, []string{"shows next", "Alerts are off"}},
+		{"bad show_watching", map[string]string{"show_watching": "maybe", "alerts": "false"}, core.Link{}, false, true, []string{"on or off for show_watching"}},
+		{"bad alerts", map[string]string{"alerts": "maybe"}, core.Link{}, false, true, []string{"on or off for alerts"}},
 	}
 	for _, c := range cases {
-		t.Run(c.value, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			r := onRig()
+			l := c.start
+			l.DiscordID, l.UserID, l.UserName = "d1", "u1", "Alice"
+			_ = r.links.Put(l)
 			f := New(r.deps)
-			call(t, f, "privacy", "d1", map[string]string{"show_watching": c.value})
+			call(t, f, "privacy", "d1", c.opts)
 			rp := r.dc.lastReply()
-			if !rp.Ephemeral || !strings.Contains(rp.Msg.Content, c.wantMsg) {
-				t.Fatalf("reply = %+v", rp)
+			for _, w := range c.wantMsg {
+				if !rp.Ephemeral || !strings.Contains(rp.Msg.Content, w) {
+					t.Errorf("reply %q lacks %q", rp.Msg.Content, w)
+				}
 			}
-			l, _ := r.links.ByDiscord("d1")
-			if l.ShowWatching != c.want || l.UserID != "u1" || l.UserName != "Alice" {
-				t.Fatalf("link = %+v", l)
+			if len(c.opts) == 0 && strings.Contains(rp.Msg.Content, "Done.") {
+				t.Errorf("nothing was changed, but the reply says so: %q", rp.Msg.Content)
+			}
+			got, _ := r.links.ByDiscord("d1")
+			if got.ShowWatching != c.wantShow || got.AlertsOff == c.wantAlerts || got.UserID != "u1" || got.UserName != "Alice" {
+				t.Fatalf("link = %+v", got)
 			}
 		})
 	}
-	// Turning it off again works too.
-	r := onRig()
-	f := New(r.deps)
-	call(t, f, "privacy", "d1", map[string]string{"show_watching": "true"})
-	call(t, f, "privacy", "d1", map[string]string{"show_watching": "false"})
-	if l, _ := r.links.ByDiscord("d1"); l.ShowWatching {
-		t.Fatal("still showing")
+}
+
+func TestPrivacyOptionsAreOptional(t *testing.T) {
+	c := cmd(t, New(onRig().deps), "privacy")
+	var names []string
+	for _, o := range c.Options {
+		names = append(names, o.Name)
+		if o.Required || o.Type != core.OptString || strings.Join(o.Choices, ",") != "on,off" {
+			t.Errorf("option %s: required=%v type=%v choices=%v", o.Name, o.Required, o.Type, o.Choices)
+		}
+	}
+	if got := strings.Join(names, ","); got != "show_watching,alerts" {
+		t.Errorf("options = %s", got)
 	}
 }
 

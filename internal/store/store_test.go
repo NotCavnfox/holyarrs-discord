@@ -198,3 +198,44 @@ func TestConcurrent(t *testing.T) {
 		t.Fatalf("want 3 files, got %v", entries)
 	}
 }
+
+// A Save that was killed before its rename leaves a temp file; the next start
+// removes it and touches nothing else.
+func TestNewSweepsLeftoverTempFiles(t *testing.T) {
+	s, dir := newStore(t)
+	if err := s.Save("links", doc{A: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"links.123456.tmp", "tiles.9.tmp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(other, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "dir.1.tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if got := strings.Join(names, " "); got != "dir.1.tmp links.json notes.txt" {
+		t.Fatalf("data folder holds %q", got)
+	}
+	var d doc
+	if err := s2.Load("links", &d); err != nil || d.A != "kept" {
+		t.Fatalf("document after the sweep: %+v %v", d, err)
+	}
+}

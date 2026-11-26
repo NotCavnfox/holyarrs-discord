@@ -115,6 +115,7 @@ const pageTail = `
 <div class="note">
 <h2>Privacy</h2>
 <p>A member's name is not shown next to what they watch unless they opt in. They can turn it on or off at any time with <code>/privacy</code>.</p>
+<p>A linked member gets a private message when a request of theirs is available. <code>/privacy alerts:off</code> turns that off.</p>
 </div>
 </main>
 </body>

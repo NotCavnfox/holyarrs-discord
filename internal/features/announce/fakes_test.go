@@ -25,6 +25,9 @@ type fakeHA struct {
 	poster      []byte
 	posterType  string
 	posterErr   error
+	art         map[string][]byte // Artwork, by ref
+	artErr      map[string]error
+	artAsked    []string
 	people      []core.PersonWatch
 	peopleErr   error
 	watched     []core.WatchedTitle
@@ -83,6 +86,26 @@ func (h *fakeHA) Poster(context.Context, core.TitleID) ([]byte, string, error) {
 	defer h.mu.Unlock()
 	h.hit("poster")
 	return h.poster, h.posterType, h.posterErr
+}
+func (h *fakeHA) Artwork(context.Context, string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hit("artwork-full")
+	return nil, "", core.ErrNotFound
+}
+func (h *fakeHA) Thumbnail(_ context.Context, ref string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hit("artwork")
+	h.artAsked = append(h.artAsked, ref)
+	if err := h.artErr[ref]; err != nil {
+		return nil, "", err
+	}
+	data, ok := h.art[ref]
+	if !ok {
+		return nil, "", core.ErrNotFound
+	}
+	return data, "image/jpeg", nil
 }
 func (h *fakeHA) WatchPeople(context.Context) ([]core.PersonWatch, error) {
 	h.mu.Lock()
@@ -149,10 +172,6 @@ func (h *fakeHA) CreateRequest(_ context.Context, as core.UserID, what core.Sear
 		AskedBy: []core.UserID{as},
 	}, nil
 }
-func (h *fakeHA) CleanupCandidates(context.Context) ([]core.CleanupCandidate, error) {
-	return nil, nil
-}
-func (h *fakeHA) DeleteTitle(context.Context, core.TitleID) error { return nil }
 func (h *fakeHA) Events(context.Context) (<-chan core.Event, error) {
 	return nil, nil
 }

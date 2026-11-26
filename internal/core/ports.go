@@ -40,6 +40,13 @@ type HolyArrs interface {
 	Title(ctx context.Context, id TitleID) (Title, error)
 	// Poster returns the stored poster bytes and their content type.
 	Poster(ctx context.Context, id TitleID) (data []byte, contentType string, err error)
+	// Artwork returns the stored picture a Title.Artwork names: at most 5 MB
+	// of JPEG, PNG or WebP. ErrNotFound when there is no such picture,
+	// ErrForbidden without the library.artwork.read permission.
+	Artwork(ctx context.Context, ref string) (data []byte, contentType string, err error)
+	// Thumbnail returns the same picture at HolyArrs's small size: a JPEG of
+	// at most 250 pixels a side and at most 1 MB. Errors as for Artwork.
+	Thumbnail(ctx context.Context, ref string) (data []byte, contentType string, err error)
 	// WatchPeople returns per-person watch totals.
 	WatchPeople(ctx context.Context) ([]PersonWatch, error)
 	// RecentlyWatched returns titles by latest watch time, newest first.
@@ -55,9 +62,6 @@ type HolyArrs interface {
 	// limits and auto-approve rules. Returns ErrLimit over the person's
 	// limit and ErrAlreadyAvailable when the title is already in the library.
 	CreateRequest(ctx context.Context, as UserID, what SearchResult) (Request, error)
-
-	CleanupCandidates(ctx context.Context) ([]CleanupCandidate, error)
-	DeleteTitle(ctx context.Context, id TitleID) error
 
 	// Events streams events until ctx ends. The channel closes on return.
 	Events(ctx context.Context) (<-chan Event, error)

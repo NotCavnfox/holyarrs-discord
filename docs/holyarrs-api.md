@@ -1,7 +1,7 @@
 # HolyArrs wire contracts used by this plugin
 
 From a read-only scan of the HolyArrs source (commit e0d44c78, 2026-11-24; the two link routes
-from commit a73d48c8). Paths in brackets are
+from commit a73d48c8; scopes, artwork and `GET /asks` checked against a97f944e). Paths in brackets are
 under `app/backend/` in that repo. Items marked *inferred* were not confirmed; verify in the source
 or at run time. All calls: `Authorization: Bearer $HOLYARRS_PLUGIN_TOKEN` to
 `$HOLYARRS_PLUGIN_TARGET` (`http://127.0.0.1:<port>`). Errors are `{"error":"<text>"}`.
@@ -68,7 +68,9 @@ replaces it. Shown on Home to **every signed-in user** (`GET /api/v1/plugin-widg
   10 minutes; a new call for the same external replaces the code.
 - `GET /api/v1/plugin-hooks/users` -> `{"users":[{"id":1,"name":"login"}]}`.
 - `X-Holyarrs-For-User: <id>`: accepted only on non-GET `/asks*`, `/ask-limits*`, `/turned-down*`
-  and `*/follow` (any method). Unlinked -> `403 "that person has not linked this plugin to their account"`.
+  and `*/follow` (any method), plus `GET /my/follows`. Unlinked -> `403 "that person has not linked
+  this plugin to their account"`. On any other route the header is refused: `403 "a plugin acts
+  for a person only on requests and follows"`.
 - `GET /api/v1/plugin-hooks/links` -> `200 {"links":[{"user_id":7,"external":"302845117690216449","created_at":"RFC3339"}]}`.
   The calling plugin's own links, only for users who can still sign in, ordered by `user_id`.
   `external` is the text given to `POST …/link`. No links: `{"links":[]}`.
@@ -82,6 +84,11 @@ replaces it. Shown on Home to **every signed-in user** (`GET /api/v1/plugin-widg
   users can hold the same `external`.
 
 ## Data routes
+A held scope covers its children with the same verb: `library.read` covers `library.artwork.read`
+and `library.music.read` [internal/accounts/plugin_scopes.go, `scopeCovers`]. A route with no
+plugin scope answers `403 "plugins can't use this route"`; a missing scope answers
+`403 "this plugin was not given the <scope> permission"`.
+
 | Scope | Route | Shape (trimmed) |
 |---|---|---|
 | library.read | `GET /api/v1/titles/{id}` | `{id,kind,name,year?,overview?,artwork:[str],added_at,size_bytes,asks:[…]}` [internal/discover/title_view.go:71-148] |
@@ -90,11 +97,12 @@ replaces it. Shown on Home to **every signed-in user** (`GET /api/v1/plugin-widg
 | library.read | `GET /api/v1/library/watched-cleanup?days=&people=k1,k2` | `{enabled,days,people:[{key,name,server,chosen}],found:[{id,kind,name,year?,bytes,last_watched_at}]}` |
 | library.read | `GET /api/v1/titles/lookup?term=&year=` | movies; results carry tmdb id, `title_id?` (in library), `ask?` |
 | library.read | `GET /api/v1/shows/lookup?term=&source=tmdb` | `{shows:[{…,title_id?,ask?}],source}` |
-| library.artwork.read | `GET <artwork entry>[?size=250]` | entries look like `/api/v1/artwork/<name>`; raw image bytes; cache miss may 429 with `Retry-After: 60` |
+| library.artwork.read (held through library.read) | `GET /api/v1/artwork/{name}[?size=250]` | A stored picture, as listed in a title's `artwork`, a Home card's `poster` or a calendar date's `poster` (`/api/v1/artwork/<name>`). Raw bytes from disk: JPEG, PNG or WebP by the name's extension, at most 10 MB; `?size=250` gives a JPEG at most 250 px a side; `404` when not stored. The poster grid reads `?size=250` and caps at 1 MB; full size (capped at 5 MB) is read only for a new-title post. A `poster` that is not such a path is an outside `https` link (TMDB, TVmaze) the plugin cannot fetch |
+| library.artwork.read | `GET /api/v1/artwork/tmdb/{size}/{file}`, `GET /api/v1/artwork/img/{kind}/{id}/{file}` | Pictures HolyArrs fetches on demand; a cache miss may 429 with `Retry-After: 60`. Not used by the bot |
 | calendar.read | `GET /api/v1/calendar?from=YYYY-MM-DD&to=&titles=all` | `{dates:[{title_id,name,year?,kind,date,season?,episode?,episode_name?,poster?}]}` |
 | discover.home.read | `GET /api/v1/home` | `{…,arrived:[…],soon:[{key,kind,title_id,name,year?,line?,poster?,at?}]}` (confirm `arrived` item shape in source) |
 | requests.read | `GET /api/v1/asked-by?title_id=1&title_id=2` | `{"titles":{"<id>":{"askers":[{id,name,asked_at}]}}}`, max 200 ids |
-| requests.read | `GET /api/v1/asks` | *inferred*: returns an empty list for a plugin. Do not rely on it. |
+| requests.read | `GET /api/v1/asks`, `GET /api/v1/asks/{id}` | Open to plugins, but useless: the list holds only the caller's own asks unless the caller may approve, and a plugin token is no person, so it is `{"asks":[],…}`; one ask by id is `404` for the same reason. With `X-Holyarrs-For-User` both answer `403` (a GET is not a for-person route) [internal/requests/routes_asks.go `listAsks`, internal/accounts/plugin_tokens.go `pluginForPerson`]. So a plugin cannot list a person's requests |
 | requests.change + For-User | `POST /api/v1/asks` | `{"id":"tmdb:N","kind":"movie|show"}` -> 201/200 `{"ask":{id,kind,name,year?,poster?,state,title_id?},"joined","already"}`; 409 `{error,title_id,ready}` already in library; 429 + `Retry-After` `{error,retry_at,per_week,kind}` over the weekly limit [internal/requests/routes_asks.go:66-75,220-326] |
 | library.delete | `POST /api/v1/titles/{id}/delete` | `{"delete_files":bool,"apply":bool,…}`; `apply:false` is a dry run |
 
@@ -102,4 +110,7 @@ There is no now-playing or sessions route.
 
 ## Manifest notes
 `version` is required by the engine in dev mode. `*.discord.gg` matches `gateway.discord.gg` but
-not `discord.gg`; list bare domains separately. Hosts limit is 100 in code.
+not `discord.gg`; list bare domains separately. Hosts limit is 100 in code. The manifest lists
+only `discord.com` and `gateway.discord.gg`: discordgo 0.29.0 dials the address `GET /gateway`
+returns (wsapi.go `Open`) for the first connection and for every reconnect and resume, and does
+not read `resume_gateway_url`.

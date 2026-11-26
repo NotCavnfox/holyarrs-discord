@@ -80,11 +80,13 @@ func Run(ctx context.Context, deps core.Deps, bus *Bus, features []core.Feature)
 }
 
 // RunWith opens Discord with every feature's commands, pumps HolyArrs events
-// into the bus and runs each feature in its own goroutine. A feature that
-// returns early or panics is logged and restarted with backoff; it never
-// stops the others. When ctx ends it waits up to ShutdownWait for the
-// features, closes the bus and Discord and returns nil. It returns an error
-// only when the bot could not start.
+// into the bus and runs each feature in its own goroutine. Discord not
+// opening (a network or DNS blip at start, a bad token) is retried with
+// backoff until ctx ends: a plugin that exits is marked as stopped on its own
+// and is not started again. A feature that returns early or panics is logged
+// and restarted with backoff; it never stops the others. When ctx ends it
+// waits up to ShutdownWait for the features, closes the bus and Discord and
+// returns nil. It returns an error only for a wiring mistake.
 func RunWith(ctx context.Context, deps core.Deps, bus *Bus, features []core.Feature, timing Timing) error {
 	timing = timing.withDefaults()
 	log := orDiscard(deps.Log)
@@ -102,25 +104,24 @@ func RunWith(ctx context.Context, deps core.Deps, bus *Bus, features []core.Feat
 		bus.Close()
 		return err
 	}
-	if err := deps.DC.Open(ctx, cmds, router.Handle); err != nil {
-		bus.Close()
-		return fmt.Errorf("app: open Discord: %w", err)
-	}
 
-	// The pump starts only now: Discord is open and every feature subscribed
-	// in its constructor, so no event is published before someone listens.
+	// The pump starts first: it is what reads stdin, and stdin closing is how
+	// HolyArrs says stop, also while Discord is still being opened. Every
+	// feature subscribed in its constructor, so events wait in the bus.
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		pumpEvents(ctx, deps.HA, bus, log, timing)
 	}()
-	for _, f := range features {
-		wg.Add(1)
-		go func(f core.Feature) {
-			defer wg.Done()
-			supervise(ctx, f, log, timing)
-		}(f)
+	if openDiscord(ctx, deps.DC, cmds, router.Handle, log, timing) {
+		for _, f := range features {
+			wg.Add(1)
+			go func(f core.Feature) {
+				defer wg.Done()
+				supervise(ctx, f, log, timing)
+			}(f)
+		}
 	}
 
 	<-ctx.Done()
@@ -141,6 +142,28 @@ func RunWith(ctx context.Context, deps core.Deps, bus *Bus, features []core.Feat
 		log.Warn("closing Discord failed", "err", err)
 	}
 	return nil
+}
+
+// openDiscord opens Discord, trying again with backoff until it works or ctx
+// ends. It reports whether Discord is open. Each failed attempt is logged
+// once; the adapter keeps the token out of its errors.
+func openDiscord(ctx context.Context, dc core.Discord, cmds []core.Command, router core.InteractionHandler, log *slog.Logger, timing Timing) bool {
+	bo := newBackoff(timing)
+	for attempt := 1; ctx.Err() == nil; attempt++ {
+		err := dc.Open(ctx, cmds, router)
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		delay := bo.next()
+		log.Error("Discord did not open, retrying", "attempt", attempt, "err", err, "in", delay)
+		if !sleep(ctx, delay) {
+			return false
+		}
+	}
+	return false
 }
 
 // pumpEvents copies HolyArrs events into the bus until ctx ends, opening the

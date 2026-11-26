@@ -1,4 +1,4 @@
-// Package requests owns /me, /search, /request and /privacy, the "Request"
+// Package requests owns /status, /search, /request and /privacy, the "Request"
 // buttons under search results, and the record of requests made through the
 // bot (HolyArrs gives a plugin no list of requests).
 package requests
@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +22,7 @@ const (
 	featureName  = "requests"
 	actionReq    = "req"
 	maxResults   = 5
-	maxMine      = 15
+	maxRecent    = 3 // available requests /status shows when nothing is in progress
 	storeDoc     = "myrequests"
 	maxStored    = 50 // requests remembered per member
 	defaultTTL   = 15 * time.Minute
@@ -37,12 +36,15 @@ const (
 	textDisabled  = "Requests are turned off on this server."
 	textTrouble   = "Something went wrong talking to HolyArrs. Try again in a bit."
 	textInLibrary = "That's already in the library."
-	textNotListed = "Requests made in HolyArrs itself are not listed here."
+	textNotListed = "Only requests made through the bot are listed."
 )
 
-// myRequest is one request a member made through the bot.
+// myRequest is one request a member made through the bot. User is the
+// HolyArrs user it was made as: a member who links to another user never sees
+// or hears of the old user's requests.
 type myRequest struct {
 	ID      string             `json:"id"`
+	User    core.UserID        `json:"user,omitempty"`
 	Name    string             `json:"name"`
 	Year    int                `json:"year,omitempty"`
 	Kind    core.Kind          `json:"kind,omitempty"`
@@ -98,7 +100,8 @@ func randomKey() string {
 
 func (f *Feature) Name() string { return featureName }
 
-// Run keeps the stored requests up to date from request events.
+// Run keeps the stored requests up to date from request events and drops a
+// member's requests when their link goes.
 func (f *Feature) Run(ctx context.Context) error {
 	if f.events == nil {
 		<-ctx.Done()
@@ -179,12 +182,54 @@ func (f *Feature) remember(discordID string, r myRequest) {
 	f.saveLocked()
 }
 
-// requestsOf returns a copy of the member's stored requests, newest first.
-func (f *Feature) requestsOf(discordID string) []myRequest {
+// requestsOf returns a copy of the stored requests the member made as user,
+// newest first.
+func (f *Feature) requestsOf(discordID string, user core.UserID) []myRequest {
 	f.recMu.Lock()
 	defer f.recMu.Unlock()
 	f.loadLocked()
-	return append([]myRequest(nil), f.mine[discordID]...)
+	var out []myRequest
+	for _, r := range f.mine[discordID] {
+		if madeAs(r, user) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// madeAs reports whether a stored request belongs to user. One stored before
+// the user was recorded counts for whoever the member is linked to.
+func madeAs(r myRequest, user core.UserID) bool {
+	return r.User == "" || r.User == user
+}
+
+// forget drops the stored requests of a member whose link was removed. When
+// the member is linked again by the time this runs, the requests made as
+// that user stay.
+func (f *Feature) forget(discordID string) {
+	if discordID == "" {
+		return
+	}
+	link, linked := f.d.Links.ByDiscord(discordID)
+	f.recMu.Lock()
+	defer f.recMu.Unlock()
+	f.loadLocked()
+	list := f.mine[discordID]
+	var keep []myRequest
+	for _, r := range list {
+		if linked && r.User != "" && r.User == link.UserID {
+			keep = append(keep, r)
+		}
+	}
+	if len(keep) == len(list) {
+		return
+	}
+	if len(keep) == 0 {
+		delete(f.mine, discordID)
+	} else {
+		f.mine[discordID] = keep
+	}
+	f.saveLocked()
 }
 
 // matches reports whether an event is about a stored request: by request id
@@ -202,11 +247,15 @@ type statusChange struct {
 }
 
 // handleEvent updates stored requests from an approved, declined or
-// available event and DMs the member on approved and declined. The "ready"
-// DM belongs to the announce feature.
+// available event and DMs the member on approved and declined, unless they
+// turned alerts off. The "ready" DM belongs to the announce feature. A
+// removed link drops that member's stored requests.
 func (f *Feature) handleEvent(ctx context.Context, ev core.Event) {
 	var to core.RequestStatus
 	switch ev.Type {
+	case core.EventLinkRemoved:
+		f.forget(ev.Member)
+		return
 	case core.EventRequestApproved:
 		to = core.RequestApproved
 	case core.EventRequestDeclined:
@@ -251,6 +300,12 @@ func (f *Feature) handleEvent(ctx context.Context, ev core.Event) {
 	}
 	sort.Slice(changed, func(i, j int) bool { return changed[i].discordID < changed[j].discordID })
 	for _, c := range changed {
+		// Alerts off means no request DM at all; and nobody is told about a
+		// request made as a HolyArrs user they are no longer linked to.
+		link, ok := f.d.Links.ByDiscord(c.discordID)
+		if !ok || link.AlertsOff || !madeAs(c.req, link.UserID) {
+			continue
+		}
 		what := "was approved."
 		if to == core.RequestDeclined {
 			what = "was declined."
@@ -266,15 +321,18 @@ func (f *Feature) handleEvent(ctx context.Context, ev core.Event) {
 	}
 }
 
-// Commands returns /me and /privacy always, /search and /request when
+// Commands returns /status and /privacy always, /search and /request when
 // requests are enabled.
 func (f *Feature) Commands() []core.Command {
 	cmds := []core.Command{
-		{Name: "me", Description: "Your requests and watch totals", Handle: f.handleMe},
+		{Name: "status", Description: "Your requests that are in progress", Handle: f.handleStatus},
 		{
-			Name: "privacy", Description: "Choose whether your name shows next to what you watch",
-			Options: []core.Option{{Name: "show_watching", Description: "Show my name next to what I watch", Type: core.OptBool, Required: true}},
-			Handle:  f.handlePrivacy,
+			Name: "privacy", Description: "Your privacy and alert choices",
+			Options: []core.Option{
+				{Name: "show_watching", Description: "Show my name next to what I watch", Type: core.OptString, Choices: []string{"on", "off"}},
+				{Name: "alerts", Description: "Message me when a request of mine is approved, declined or available", Type: core.OptString, Choices: []string{"on", "off"}},
+			},
+			Handle: f.handlePrivacy,
 		},
 	}
 	if !f.d.Cfg.EnableRequests {
@@ -315,133 +373,130 @@ func errText(err error) string {
 
 // ---- /privacy ----
 
+// onOff reads an optional on/off option. set is false when the member left
+// it out. Discord only offers "on" and "off"; true and false are read too.
+func onOff(in *core.Interaction, name string) (on, set bool, err error) {
+	raw, ok := in.Options[name]
+	if !ok || raw == "" {
+		return false, false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "on", "true":
+		return true, true, nil
+	case "off", "false":
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf("%s: %q is not on or off", name, raw)
+}
+
+// privacyText is the member's current choices, one per line.
+func privacyText(l core.Link) string {
+	s := "Your name is hidden from watch activity."
+	if l.ShowWatching {
+		s = "Your name shows next to what you watch."
+	}
+	if l.AlertsOff {
+		return s + "\nAlerts are off: no messages about your requests."
+	}
+	return s + "\nAlerts are on: you get a message when a request of yours is approved, declined or available."
+}
+
 func (f *Feature) handlePrivacy(ctx context.Context, in *core.Interaction) error {
 	link, ok := f.d.Links.ByDiscord(in.UserID)
 	if !ok {
 		return f.d.DC.Respond(ctx, in, text(textNotLinked), true)
 	}
-	show, err := strconv.ParseBool(in.Options["show_watching"])
+	show, setShow, err := onOff(in, "show_watching")
 	if err != nil {
-		return f.d.DC.Respond(ctx, in, text("Choose true or false for show_watching."), true)
+		return f.d.DC.Respond(ctx, in, text("Choose on or off for show_watching."), true)
 	}
-	link.ShowWatching = show
+	alerts, setAlerts, err := onOff(in, "alerts")
+	if err != nil {
+		return f.d.DC.Respond(ctx, in, text("Choose on or off for alerts."), true)
+	}
+	if !setShow && !setAlerts {
+		return f.d.DC.Respond(ctx, in, text(privacyText(link)+
+			"\nChange them with /privacy show_watching or /privacy alerts."), true)
+	}
+	if setShow {
+		link.ShowWatching = show
+	}
+	if setAlerts {
+		link.AlertsOff = !alerts
+	}
 	if err := f.d.Links.Put(link); err != nil {
 		f.d.Log.Error("requests: save privacy", "err", err)
 		return f.d.DC.Respond(ctx, in, text("Couldn't save that. Try again in a bit."), true)
 	}
-	msg := "Done. Your name will no longer appear next to what you watch."
-	if show {
-		msg = "Done. Your name will now appear next to what you watch."
+	return f.d.DC.Respond(ctx, in, text("Done. "+privacyText(link)), true)
+}
+
+// ---- /status ----
+
+// stateWords says a request's state in plain words.
+func stateWords(s core.RequestStatus) string {
+	switch s {
+	case core.RequestPending:
+		return "Waiting for approval"
+	case core.RequestApproved:
+		return "Approved, not on the server yet"
+	case core.RequestAvailable:
+		return "Available"
+	case core.RequestDeclined:
+		return "Declined"
 	}
-	return f.d.DC.Respond(ctx, in, text(msg), true)
+	return "In progress"
 }
 
-// ---- /me ----
-
-var statusOrder = []struct {
-	s     core.RequestStatus
-	label string
-}{
-	{core.RequestPending, "Pending"},
-	{core.RequestApproved, "Approved"},
-	{core.RequestAvailable, "Available"},
-	{core.RequestDeclined, "Declined"},
-	{core.RequestOther, "Other"},
+// inProgress reports whether a request is still open: anything that is not
+// available and not declined.
+func inProgress(s core.RequestStatus) bool {
+	return s != core.RequestAvailable && s != core.RequestDeclined
 }
 
-func (f *Feature) handleMe(ctx context.Context, in *core.Interaction) error {
+func (f *Feature) handleStatus(ctx context.Context, in *core.Interaction) error {
 	link, ok := f.d.Links.ByDiscord(in.UserID)
 	if !ok {
 		return f.d.DC.Respond(ctx, in, text(textNotLinked), true)
 	}
-	if err := f.d.DC.Defer(ctx, in, true); err != nil {
-		return err
-	}
-	people, werr := f.d.HA.WatchPeople(ctx)
-	if werr != nil {
-		f.d.Log.Warn("requests: /me watch totals", "err", werr)
-	}
-	e := meEmbed(link, f.requestsOf(in.UserID), people, werr != nil)
-	return f.d.DC.FollowUp(ctx, in, clampMessage(core.Message{Embeds: []core.Embed{e}}), true)
+	e := statusEmbed(link, f.requestsOf(in.UserID, link.UserID), f.d.Cfg.EnableRequests)
+	return f.d.DC.Respond(ctx, in, clampMessage(core.Message{Embeds: []core.Embed{e}}), true)
 }
 
-func meEmbed(link core.Link, mine []myRequest, people []core.PersonWatch, watchFailed bool) core.Embed {
-	total := len(mine)
-	if len(mine) > maxMine {
-		mine = mine[:maxMine]
-	}
-	e := core.Embed{Title: "Your HolyArrs", Color: colorInfo}
+// statusEmbed lists the member's requests that are not finished, newest
+// first. With none it lists their last maxRecent available requests instead.
+// canRequest is whether /request exists on this server.
+func statusEmbed(link core.Link, mine []myRequest, canRequest bool) core.Embed {
+	e := core.Embed{Title: "Your requests", Color: colorInfo, Footer: textNotListed}
 	if link.UserName != "" {
-		e.Title = truncate("Your HolyArrs · "+escapeMD(link.UserName), maxEmbedTitle)
+		e.Title = truncate("Your requests · "+escapeMD(link.UserName), maxEmbedTitle)
 	}
-	known := map[core.RequestStatus]bool{}
-	for _, so := range statusOrder {
-		known[so.s] = true
+	line := func(r myRequest) string {
+		l := "a title"
+		if r.Name != "" {
+			l = titleLabel(r.Name, r.Year)
+		}
+		return l + " · " + stateWords(r.Status)
 	}
-	for _, so := range statusOrder {
-		var lines []string
-		for _, r := range mine {
-			st := r.Status
-			if !known[st] {
-				st = core.RequestOther
-			}
-			if st != so.s {
-				continue
-			}
-			l := titleLabel(r.Name, r.Year)
-			if k := kindLabel(r.Kind); k != "" {
-				l += " · " + k
-			}
-			if !r.At.IsZero() {
-				l += " · " + relTime(r.At)
-			}
-			lines = append(lines, l)
+	var open, done []string
+	for _, r := range mine {
+		switch {
+		case inProgress(r.Status):
+			open = append(open, line(r))
+		case r.Status == core.RequestAvailable && len(done) < maxRecent:
+			done = append(done, line(r))
 		}
-		if len(lines) == 0 {
-			continue
-		}
-		e.Fields = append(e.Fields, core.Field{
-			Name:  fmt.Sprintf("%s (%d)", so.label, len(lines)),
-			Value: joinLines(lines, maxFieldValue),
-		})
 	}
 	switch {
-	case total == 0:
-		e.Description = "You have made no requests through the bot yet. Use /request to ask for something. " + textNotListed
-	case total > maxMine:
-		e.Description = fmt.Sprintf("Your %d newest requests of %d made through the bot. ", maxMine, total) + textNotListed
+	case len(open) > 0:
+		e.Description = joinLines(open, maxEmbedDesc)
+	case len(done) > 0:
+		e.Description = joinLines(append([]string{"Nothing is in progress. Your last available requests:"}, done...), maxEmbedDesc)
+	case canRequest:
+		e.Description = "Nothing is in progress. Use /request to ask for something."
 	default:
-		e.Description = "Your requests made through the bot. " + textNotListed
+		e.Description = "Nothing is in progress."
 	}
-
-	// Their own totals: this is the caller's data, shown only to them. One
-	// person can have several media-server accounts.
-	var sum core.PersonWatch
-	found := false
-	for _, p := range people {
-		if p.UserID == "" || p.UserID != link.UserID {
-			continue
-		}
-		found = true
-		sum.Movies += p.Movies
-		sum.Shows += p.Shows
-		sum.Episodes += p.Episodes
-		sum.Plays += p.Plays
-		if p.LastWatched.After(sum.LastWatched) {
-			sum.LastWatched = p.LastWatched
-		}
-	}
-	watch := "Nothing watched yet."
-	switch {
-	case found:
-		watch = fmt.Sprintf("Movies: %d · Shows: %d · Episodes: %d · Plays: %d", sum.Movies, sum.Shows, sum.Episodes, sum.Plays)
-		if !sum.LastWatched.IsZero() {
-			watch += "\nLast watched " + relTime(sum.LastWatched)
-		}
-	case watchFailed:
-		watch = "Couldn't load this right now."
-	}
-	e.Fields = append(e.Fields, core.Field{Name: "Your watching", Value: watch})
 	return e
 }
 
@@ -647,7 +702,8 @@ func (f *Feature) HandleComponent(ctx context.Context, in *core.Interaction) err
 		return f.d.DC.FollowUp(ctx, in, text(errText(err)), true)
 	}
 	rec := myRequest{
-		ID: req.ID, Name: req.Title.Name, Year: req.Title.Year, Kind: req.Title.Kind,
+		User: link.UserID,
+		ID:   req.ID, Name: req.Title.Name, Year: req.Title.Year, Kind: req.Title.Kind,
 		TitleID: req.Title.ID, Status: req.Status, At: req.CreatedAt,
 	}
 	if rec.Name == "" {

@@ -44,7 +44,6 @@ func Load(getenv func(string) string) (core.Config, error) {
 		InviteURL:        setting("INVITE_URL"),
 		DashboardChannel: setting("DASHBOARD_CHANNEL_ID"),
 		AnnounceChannel:  setting("ANNOUNCE_CHANNEL_ID"),
-		ModChannel:       setting("MOD_CHANNEL_ID"),
 		AdminRoleID:      setting("ADMIN_ROLE_ID"),
 		LinkedRoleID:     setting("LINKED_ROLE_ID"),
 	}
@@ -71,7 +70,6 @@ func Load(getenv func(string) string) (core.Config, error) {
 		{"GUILD_ID", cfg.GuildID},
 		{"DASHBOARD_CHANNEL_ID", cfg.DashboardChannel},
 		{"ANNOUNCE_CHANNEL_ID", cfg.AnnounceChannel},
-		{"MOD_CHANNEL_ID", cfg.ModChannel},
 		{"ADMIN_ROLE_ID", cfg.AdminRoleID},
 		{"LINKED_ROLE_ID", cfg.LinkedRoleID},
 	} {
@@ -129,20 +127,20 @@ func Load(getenv func(string) string) (core.Config, error) {
 	return cfg, nil
 }
 
-// Redacted returns cfg as a log value with the secrets replaced by whether
-// they are set. Log this instead of the Config itself: core.Config is a plain
-// struct, so printing it directly would show the tokens.
+// Redacted returns cfg as a log value with the secrets, the Discord ids and
+// the invite link replaced by whether they are set. Log this instead of the
+// Config itself: core.Config is a plain struct, so printing it directly would
+// show the tokens.
 func Redacted(cfg core.Config) slog.Value {
 	return slog.GroupValue(
 		slog.String("bot_token", secret(cfg.BotToken)),
 		slog.String("holyarrs_token", secret(cfg.HolyArrsToken)),
-		slog.String("guild_id", cfg.GuildID),
-		slog.String("invite_url", cfg.InviteURL),
-		slog.String("dashboard_channel", cfg.DashboardChannel),
-		slog.String("announce_channel", cfg.AnnounceChannel),
-		slog.String("mod_channel", cfg.ModChannel),
-		slog.String("admin_role_id", cfg.AdminRoleID),
-		slog.String("linked_role_id", cfg.LinkedRoleID),
+		slog.Bool("guild_set", cfg.GuildID != ""),
+		slog.Bool("invite_set", cfg.InviteURL != ""),
+		slog.Bool("dashboard_channel_set", cfg.DashboardChannel != ""),
+		slog.Bool("announce_channel_set", cfg.AnnounceChannel != ""),
+		slog.Bool("admin_role_set", cfg.AdminRoleID != ""),
+		slog.Bool("linked_role_set", cfg.LinkedRoleID != ""),
 		slog.Duration("refresh_every", cfg.RefreshEvery),
 		slog.Bool("enable_dashboard", cfg.EnableDashboard),
 		slog.Bool("enable_announce", cfg.EnableAnnounce),

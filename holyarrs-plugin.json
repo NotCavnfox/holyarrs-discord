@@ -3,14 +3,16 @@
   "name": "Discord",
   "version": "1.0.0",
   "author": "NotCavnfox",
-  "description": "A Discord bot for your server: link accounts, live library tiles, requests and ready pings.",
-  "long_description": "Runs a Discord bot inside HolyArrs. Members link their Discord account to their HolyArrs account with a one-time code, then see self-updating tiles of recently added and watched titles, make requests from Discord, and get a message when a request is ready. Names on the watch leaderboard are opt-in.",
+  "description": "A Discord bot for your server: account linking, self-updating library tiles, requests from Discord and a message when a request is available.",
+  "long_description": "Runs a Discord bot inside HolyArrs. A member runs /link in Discord, gets a private one-time code and types it in HolyArrs under My account, Linked plugins. Linked members can search and make requests from Discord under their own HolyArrs limits, check their bot-made requests with /status, and get a direct message when a title they asked for is available. They can turn the messages about their requests off with /privacy alerts:off.\n\nIn a channel you choose, the bot keeps four pinned tiles up to date: Recently added and Coming up as 3x3 poster grids with a numbered list, Recently watched, and Top watchers. A name shows on Top watchers only for a member who opts in with /privacy show_watching:on. It can also post each new title in an announcements channel, and it adds a Discord card to Home that tells every signed-in user how to join and link.\n\nYou need your own Discord application and bot token. The bot talks only to Discord and to HolyArrs. It deletes nothing and has no voice features. /status lists only requests made through the bot. Not made by or affiliated with Discord or HolyArrs.",
   "how_it_works": [
-    "Create a Discord application and bot, and invite it to your server.",
-    "Paste the bot token and your server and channel ids in the plugin settings.",
-    "Members join your Discord server and run /link.",
-    "They type the code under My account, Linked plugins."
+    "Create an application and a bot at discord.com/developers and copy the bot token.",
+    "Invite the bot to your Discord server with the bot and applications.commands scopes.",
+    "Install the plugin, then set the bot token, your server id and the channel ids in its settings.",
+    "Members join your Discord server and run /link to get a private one-time code.",
+    "They type the code in HolyArrs under My account, Linked plugins. The bot confirms with a direct message."
   ],
+  "whats_new": "First release: account linking with a one-time code, four self-updating tiles with poster grids, new-title posts, /search, /request and /status, a message when a request is available, and a Discord card on Home.",
   "category": "Community",
   "licence": "MIT",
   "repo": "https://github.com/NotCavnfox/holyarrs-discord",
@@ -21,9 +23,7 @@
   "access": {
     "hosts": [
       "discord.com",
-      "gateway.discord.gg",
-      "*.discord.gg",
-      "cdn.discordapp.com"
+      "gateway.discord.gg"
     ],
     "folders": [],
     "actions": [
@@ -49,74 +49,71 @@
       "key": "bot_token",
       "label": "Bot token",
       "type": "secret",
-      "help": "From the Bot tab of your application at discord.com/developers."
+      "help": "Required. From the Bot tab of your application at discord.com/developers."
     },
     {
       "key": "guild_id",
       "label": "Server id",
       "type": "text",
-      "help": "Right-click your Discord server, Copy Server ID (Developer Mode on)."
+      "help": "Required. Right-click your Discord server and choose Copy Server ID (Developer Mode on)."
     },
     {
       "key": "invite_url",
       "label": "Invite link",
       "type": "text",
-      "help": "An https://discord.gg/... invite shown on the Home card in HolyArrs."
+      "help": "An https://discord.gg/... invite. Shown as text on the Home card and on the owner's Discord page in HolyArrs."
     },
     {
       "key": "dashboard_channel_id",
       "label": "Dashboard channel id",
       "type": "text",
-      "help": "Channel for the self-updating tiles. Leave empty to turn tiles off."
+      "help": "Channel for the four pinned, self-updating tiles. Leave empty to turn the tiles off."
     },
     {
       "key": "announce_channel_id",
       "label": "Announcements channel id",
       "type": "text",
-      "help": "Channel for new-title posts. Leave empty to turn them off."
-    },
-    {
-      "key": "mod_channel_id",
-      "label": "Moderator channel id",
-      "type": "text",
-      "help": "Channel for admin logs."
+      "help": "Channel for new-title posts. Leave empty to turn the posts off. Messages about available requests are still sent."
     },
     {
       "key": "admin_role_id",
       "label": "Admin role id",
       "type": "text",
-      "help": "Members with this role can use admin commands."
+      "help": "Members with this role can use the admin commands. Members with Manage Server or Administrator always can."
     },
     {
       "key": "linked_role_id",
       "label": "Linked role id",
       "type": "text",
-      "help": "Role given to members once they link. Optional."
+      "help": "Optional. Role given to members when they link and removed when they unlink. The bot needs Manage Roles."
     },
     {
       "key": "refresh_minutes",
       "label": "Tile refresh (minutes)",
       "type": "number",
       "default": 5,
-      "help": "How often the tiles refresh. 1 to 1440."
+      "help": "How often the tiles are checked, 1 to 1440. A tile is edited only when its content changed."
     },
     {
       "key": "enable_dashboard",
       "label": "Dashboard tiles",
       "type": "toggle",
-      "default": true
+      "default": true,
+      "help": "The four tiles and /dashboard refresh."
     },
     {
       "key": "enable_announce",
       "label": "Announcements and ready pings",
       "type": "toggle",
-      "default": true
+      "default": true,
+      "help": "New-title posts and the message a member gets when their request is available."
     },
     {
       "key": "enable_requests",
       "label": "Requests from Discord",
       "type": "toggle",
-      "default": true
+      "default": true,
+      "help": "/search and /request. /status and /privacy stay on."
     },
     {
       "key": "enable_home_widget",

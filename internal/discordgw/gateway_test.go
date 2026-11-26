@@ -153,7 +153,7 @@ func TestDispatchCommand(t *testing.T) {
 
 func TestDispatchAdminRefusal(t *testing.T) {
 	called := make(chan struct{}, 1)
-	g, notices, _ := testGateway(t, []core.Command{{
+	g, notices, logs := testGateway(t, []core.Command{{
 		Name: "request", AdminOnly: true,
 		Handle: func(context.Context, *core.Interaction) error { called <- struct{}{}; return nil },
 	}}, nil)
@@ -165,6 +165,10 @@ func TestDispatchAdminRefusal(t *testing.T) {
 	}
 	g.wg.Wait()
 	none(t, called)
+	// Counts only: the refusal is logged without the caller's id.
+	if out := logs.String(); !strings.Contains(out, "admin command refused") || strings.Contains(out, "user=") || strings.Contains(out, "u1") {
+		t.Errorf("refusal log: %s", out)
+	}
 }
 
 func TestDispatchErrorAndPanic(t *testing.T) {
@@ -190,6 +194,9 @@ func TestDispatchErrorAndPanic(t *testing.T) {
 	}
 	if strings.Contains(out, testToken) || strings.Contains(out, "tok2") {
 		t.Errorf("a token reached the log: %s", out)
+	}
+	if strings.Contains(out, "user=") || strings.Contains(out, "guild") {
+		t.Errorf("a Discord id reached the log: %s", out)
 	}
 }
 

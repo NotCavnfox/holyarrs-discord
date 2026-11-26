@@ -1,5 +1,6 @@
 // Package dashboard keeps one pinned message per tile in the dashboard
-// channel and edits it in place when its content changes.
+// channel and edits it in place when its content changes. Recently added and
+// Coming up carry a 3x3 poster grid drawn here as one attached picture.
 package dashboard
 
 import (
@@ -11,11 +12,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/NotCavnfox/holyarrs-discord/internal/core"
+	"github.com/NotCavnfox/holyarrs-discord/internal/postergrid"
 )
 
 const (
@@ -25,6 +26,15 @@ const (
 	defaultRefresh  = 5 * time.Minute
 	defaultDebounce = 10 * time.Second
 	colorTile       = 0x5865F2
+
+	gridCells      = postergrid.Cells // titles on a poster-grid tile
+	posterFetchers = 3                // poster reads at once
+	posterTimeout  = 20 * time.Second // per poster read
+	maxPosterBytes = 1 << 20          // larger pictures are not drawn; a small poster is under 100 KB
+	// posterRetries is how many later refreshes try again when a poster read
+	// failed for a reason that may pass. After that the tile stays as it is
+	// until its content changes.
+	posterRetries = 3
 )
 
 // Tile keys, in the order the messages are created.
@@ -37,7 +47,19 @@ const (
 
 type tileState struct {
 	MessageID string `json:"message_id"`
-	Hash      string `json:"hash"`
+	// Hash covers everything the tile shows: its text and, for a poster
+	// grid, the title ids and poster references in grid order.
+	Hash string `json:"hash"`
+	// Retries counts the refreshes that drew this content with a poster
+	// missing because its read failed.
+	Retries int `json:"retries,omitempty"`
+}
+
+// gridItem is one cell of a poster-grid tile.
+type gridItem struct {
+	ID      core.TitleID `json:"id"`
+	Title   string       `json:"title"`
+	Artwork string       `json:"artwork"` // core.Title.Artwork; empty: no stored poster
 }
 
 type tilesDoc struct {
@@ -105,14 +127,17 @@ func (f *Feature) handleRefresh(ctx context.Context, in *core.Interaction) error
 		return err
 	}
 	text := "Dashboard refreshed."
-	if err := f.Refresh(ctx); err != nil {
+	// Forced: every tile is drawn and sent again, so a tile message that was
+	// deleted in Discord comes back even when its content did not change.
+	if err := f.refresh(ctx, true); err != nil {
 		f.d.Log.Warn("dashboard: manual refresh", "err", err)
 		text = "Some tiles could not be refreshed. Details are in the log."
 	}
 	return f.d.DC.FollowUp(ctx, in, core.Message{Content: text}, true)
 }
 
-// Run refreshes on a timer and, debounced, on library and request events.
+// Run refreshes on a timer and, debounced, on library, request and link
+// events (a link change can add or remove a name on Top watchers).
 func (f *Feature) Run(ctx context.Context) error {
 	if !f.enabled() {
 		<-ctx.Done()
@@ -163,7 +188,8 @@ func (f *Feature) Run(ctx context.Context) error {
 func relevant(t core.EventType) bool {
 	switch t {
 	case core.EventTitleAdded, core.EventRequestCreated, core.EventRequestApproved,
-		core.EventRequestAvailable, core.EventRequestDeclined:
+		core.EventRequestAvailable, core.EventRequestDeclined,
+		core.EventLinkChanged, core.EventLinkRemoved:
 		return true
 	}
 	return false
@@ -189,7 +215,10 @@ func (f *Feature) load() {
 
 // Refresh renders every tile and sends, edits or skips each one. A tile that
 // fails is reported in the returned error; the others still update.
-func (f *Feature) Refresh(ctx context.Context) error {
+func (f *Feature) Refresh(ctx context.Context) error { return f.refresh(ctx, false) }
+
+// refresh is Refresh; with force no tile is skipped for being unchanged.
+func (f *Feature) refresh(ctx context.Context, force bool) error {
 	if !f.enabled() {
 		return nil
 	}
@@ -200,35 +229,37 @@ func (f *Feature) Refresh(ctx context.Context) error {
 
 	tiles := []struct {
 		key    string
-		render func() (core.Embed, error)
+		render func() (core.Embed, []gridItem, error)
 	}{
-		{tileAdded, func() (core.Embed, error) {
-			ts, err := f.d.HA.RecentlyAdded(ctx, tileRows)
+		{tileAdded, func() (core.Embed, []gridItem, error) {
+			ts, err := f.d.HA.RecentlyAdded(ctx, gridCells)
 			if err != nil {
-				return core.Embed{}, err
+				return core.Embed{}, nil, err
 			}
-			return renderAdded(ts), nil
+			e, grid := renderAdded(ts)
+			return e, grid, nil
 		}},
-		{tileWatched, func() (core.Embed, error) {
+		{tileWatched, func() (core.Embed, []gridItem, error) {
 			ws, err := f.d.HA.RecentlyWatched(ctx, tileRows)
 			if err != nil {
-				return core.Embed{}, err
+				return core.Embed{}, nil, err
 			}
-			return renderWatched(ws), nil
+			return renderWatched(ws), nil, nil
 		}},
-		{tileTop, func() (core.Embed, error) {
+		{tileTop, func() (core.Embed, []gridItem, error) {
 			ps, err := f.d.HA.WatchPeople(ctx)
 			if err != nil {
-				return core.Embed{}, err
+				return core.Embed{}, nil, err
 			}
-			return renderTop(ps, f.d.Links), nil
+			return renderTop(ps, f.d.Links), nil, nil
 		}},
-		{tileUpcoming, func() (core.Embed, error) {
+		{tileUpcoming, func() (core.Embed, []gridItem, error) {
 			cs, err := f.d.HA.Upcoming(ctx, upcomingDays)
 			if err != nil {
-				return core.Embed{}, err
+				return core.Embed{}, nil, err
 			}
-			return renderUpcoming(cs, now), nil
+			e, grid := renderUpcoming(cs, now)
+			return e, grid, nil
 		}},
 	}
 
@@ -239,7 +270,7 @@ func (f *Feature) Refresh(ctx context.Context) error {
 			errs = append(errs, ctx.Err())
 			break
 		}
-		e, err := t.render()
+		e, grid, err := t.render()
 		if err != nil {
 			f.d.Log.Warn("dashboard: render tile", "tile", t.key, "err", err)
 			errs = append(errs, fmt.Errorf("tile %s: %w", t.key, err))
@@ -248,15 +279,44 @@ func (f *Feature) Refresh(ctx context.Context) error {
 		e.Color = colorTile
 		e.Footer = "Updated"
 		e.Time = time.Time{}
+		file := t.key + ".jpg"
+		if len(grid) > 0 {
+			e.Image = "attachment://" + file
+		}
 		msg := core.Message{Embeds: []core.Embed{clampEmbed(e)}}
-		h := hashMessage(msg) // before Time is set: the clock must not force an edit
+		h := hashTile(msg, grid) // before Time is set: the clock must not force an edit
+		st := f.doc.Tiles[t.key]
+		if !force && st.MessageID != "" && st.Hash == h && (st.Retries == 0 || st.Retries >= posterRetries) {
+			continue // nothing changed: no poster reads, no upload
+		}
+		retries := 0
+		if len(grid) > 0 {
+			jpg, failed, err := f.composeGrid(ctx, t.key, grid)
+			switch {
+			case ctx.Err() != nil:
+				errs = append(errs, ctx.Err())
+				continue
+			case err != nil:
+				// The list still says everything; post it without the picture.
+				f.d.Log.Warn("dashboard: draw tile", "tile", t.key, "err", err)
+				msg.Embeds[0].Image = ""
+			default:
+				msg.Files = []core.File{{Name: file, ContentType: "image/jpeg", Data: jpg}}
+			}
+			if failed > 0 || err != nil {
+				retries = 1
+				if st.Hash == h {
+					retries = st.Retries + 1
+				}
+			}
+		}
 		msg.Embeds[0].Time = now
-		did, err := f.sync(ctx, t.key, msg, h)
-		if err != nil {
+		if err := f.sync(ctx, t.key, msg, h, retries); err != nil {
 			f.d.Log.Warn("dashboard: update tile", "tile", t.key, "err", err)
 			errs = append(errs, fmt.Errorf("tile %s: %w", t.key, err))
+			continue
 		}
-		changed = changed || did
+		changed = true
 	}
 	if changed {
 		if err := f.d.Store.Save(storeDoc, f.doc); err != nil {
@@ -267,39 +327,119 @@ func (f *Feature) Refresh(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// sync makes the channel show msg for one tile. It reports whether the saved
-// state changed.
-func (f *Feature) sync(ctx context.Context, key string, msg core.Message, hash string) (bool, error) {
+// composeGrid reads the posters of a grid tile at HolyArrs's small size, at
+// most posterFetchers at once, and draws them as one JPEG. Only the small
+// encoded pictures are held together; postergrid decodes one at a time. A title with no stored poster, or whose
+// poster cannot be read or used, gets a cell with its name. failed counts the
+// reads that failed for a reason that may pass (not "no such picture" and not
+// "no permission"), so the caller can try again later.
+func (f *Feature) composeGrid(ctx context.Context, key string, grid []gridItem) (jpg []byte, failed int, err error) {
+	if len(grid) > gridCells {
+		grid = grid[:gridCells]
+	}
+	// One read per picture, even when several episodes share a poster.
+	type result struct {
+		data []byte
+		err  error
+	}
+	got := map[string]*result{}
+	var refs []string
+	for _, g := range grid {
+		if g.Artwork != "" && got[g.Artwork] == nil {
+			got[g.Artwork] = &result{}
+			refs = append(refs, g.Artwork)
+		}
+	}
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, posterFetchers)
+	for _, ref := range refs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				got[ref].err = ctx.Err()
+				return
+			}
+			defer func() { <-slots }()
+			c, cancel := context.WithTimeout(ctx, posterTimeout)
+			defer cancel()
+			data, _, err := f.d.HA.Thumbnail(c, ref)
+			if err == nil && len(data) > maxPosterBytes {
+				data, err = nil, core.ErrNotFound // too large to draw; trying again will not help
+			}
+			got[ref].data, got[ref].err = data, err
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
+	}
+	cells := make([]postergrid.Cell, len(grid))
+	want, denied := 0, 0
+	for i, g := range grid {
+		cells[i].Title = g.Title
+		r := got[g.Artwork]
+		if r == nil {
+			continue
+		}
+		want++
+		switch {
+		case r.err == nil:
+			cells[i].Poster = r.data
+		case errors.Is(r.err, core.ErrForbidden):
+			denied++
+		case !errors.Is(r.err, core.ErrNotFound):
+			failed++
+		}
+	}
+	jpg, drawn, err := postergrid.Compose(cells)
+	if err != nil {
+		return nil, failed, err
+	}
+	if denied > 0 {
+		f.d.Log.Warn("dashboard: posters need the library.artwork.read permission", "tile", key, "posters", denied)
+	}
+	f.d.Log.Info("dashboard: drew tile", "tile", key, "titles", len(grid), "stored", want, "drawn", drawn, "failed", failed, "bytes", len(jpg))
+	return jpg, failed, nil
+}
+
+// sync makes the channel show msg for one tile and notes its hash. An edit
+// replaces the message's old attachment with the one in msg.
+func (f *Feature) sync(ctx context.Context, key string, msg core.Message, hash string, retries int) error {
 	ch := f.d.Cfg.DashboardChannel
 	st := f.doc.Tiles[key]
 	if st.MessageID != "" {
-		if st.Hash == hash {
-			return false, nil
-		}
 		err := f.d.DC.Edit(ctx, ch, st.MessageID, msg)
 		if err == nil {
-			st.Hash = hash
+			st.Hash, st.Retries = hash, retries
 			f.doc.Tiles[key] = st
-			return true, nil
+			return nil
 		}
 		if !errors.Is(err, core.ErrNotFound) {
-			return false, err
+			return err
 		}
 		// The message was deleted: fall through and make a new one.
 	}
 	id, err := f.d.DC.Send(ctx, ch, msg)
 	if err != nil {
-		return false, err
+		return err
 	}
-	f.doc.Tiles[key] = tileState{MessageID: id, Hash: hash}
+	f.doc.Tiles[key] = tileState{MessageID: id, Hash: hash, Retries: retries}
 	if err := f.d.DC.Pin(ctx, ch, id); err != nil {
 		f.d.Log.Warn("dashboard: pin tile", "tile", key, "err", err)
 	}
-	return true, nil
+	return nil
 }
 
-func hashMessage(m core.Message) string {
-	b, _ := json.Marshal(m)
+// hashTile is the identity of what a tile shows. The picture itself is left
+// out: it follows from the grid, and drawing it is what the hash avoids.
+func hashTile(m core.Message, grid []gridItem) string {
+	b, _ := json.Marshal(struct {
+		Msg  core.Message
+		Grid []gridItem
+	}{m, grid})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -311,33 +451,21 @@ func body(lines []string) string {
 	return joinLines(lines, maxEmbedDesc)
 }
 
-func withKind(s string, k core.Kind) string {
-	if l := kindLabel(k); l != "" {
-		return s + " · " + l
-	}
-	return s
-}
-
-func renderAdded(ts []core.Title) core.Embed {
+// renderAdded is the Recently added tile: the gridCells newest titles as a
+// numbered list, and the same titles in the same order for the poster grid.
+func renderAdded(ts []core.Title) (core.Embed, []gridItem) {
 	ts = append([]core.Title(nil), ts...)
 	sort.SliceStable(ts, func(i, j int) bool { return ts[i].AddedAt.After(ts[j].AddedAt) })
-	if len(ts) > tileRows {
-		ts = ts[:tileRows]
+	if len(ts) > gridCells {
+		ts = ts[:gridCells]
 	}
-	e := core.Embed{Title: "Recently added"}
 	lines := make([]string, 0, len(ts))
-	for _, t := range ts {
-		l := withKind(titleLabel(t.Name, t.Year), t.Kind)
-		if !t.AddedAt.IsZero() {
-			l += " · " + relTime(t.AddedAt)
-		}
-		lines = append(lines, l)
+	grid := make([]gridItem, 0, len(ts))
+	for i, t := range ts {
+		lines = append(lines, fmt.Sprintf("%d\\. %s", i+1, titleLabel(t.Name, t.Year)))
+		grid = append(grid, gridItem{ID: t.ID, Title: t.Name, Artwork: t.Artwork})
 	}
-	if len(ts) > 0 && strings.HasPrefix(ts[0].PosterURL, "https://") {
-		e.Thumbnail = ts[0].PosterURL
-	}
-	e.Description = body(lines)
-	return e
+	return core.Embed{Title: "Recently added", Description: body(lines)}, grid
 }
 
 // renderWatched lists titles and when they were last watched. HolyArrs does
@@ -460,25 +588,29 @@ func renderTop(ps []core.PersonWatch, links core.Links) core.Embed {
 	return e
 }
 
-func renderUpcoming(cs []core.CalendarItem, now time.Time) core.Embed {
+// renderUpcoming is the Coming up tile: the next gridCells releases as a
+// numbered list with their dates, and the same order for the poster grid.
+func renderUpcoming(cs []core.CalendarItem, now time.Time) (core.Embed, []gridItem) {
 	cs = append([]core.CalendarItem(nil), cs...)
 	sort.SliceStable(cs, func(i, j int) bool { return cs[i].Date.Before(cs[j].Date) })
 	// Keep things releasing today even if the hour has passed.
 	cutoff := now.Add(-12 * time.Hour)
 	var lines []string
+	var grid []gridItem
 	for _, c := range cs {
-		if len(lines) == tileRows {
+		if len(lines) == gridCells {
 			break
 		}
 		if c.Date.Before(cutoff) {
 			continue
 		}
-		l := titleLabel(c.Title.Name, c.Title.Year)
+		l := fmt.Sprintf("%d\\. %s", len(lines)+1, titleLabel(c.Title.Name, c.Title.Year))
 		if c.Label != "" {
 			l += " · " + safeName(c.Label)
 		}
 		l += " · " + relTime(c.Date)
 		lines = append(lines, l)
+		grid = append(grid, gridItem{ID: c.Title.ID, Title: c.Title.Name, Artwork: c.Title.Artwork})
 	}
-	return core.Embed{Title: "Coming up", Description: body(lines)}
+	return core.Embed{Title: "Coming up", Description: body(lines)}, grid
 }

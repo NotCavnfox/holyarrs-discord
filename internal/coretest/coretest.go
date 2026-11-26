@@ -452,6 +452,7 @@ type FakeHolyArrs struct {
 	Titles      map[core.TitleID]core.Title
 	PosterData  []byte
 	PosterType  string
+	ArtworkData map[string][]byte // Artwork, by ref
 	PeopleVal   []core.PersonWatch
 	WatchedVal  []core.WatchedTitle // RecentlyWatched, cut to limit
 	UpcomingVal []core.CalendarItem
@@ -460,9 +461,7 @@ type FakeHolyArrs struct {
 	SearchVal  []core.SearchResult
 	// Created is what CreateRequest returns; with an empty ID a pending
 	// request is made up from the arguments.
-	Created       core.Request
-	CandidatesVal []core.CleanupCandidate
-	Deleted       []core.TitleID // filled by DeleteTitle
+	Created core.Request
 
 	stream  *stream
 	pages   []core.Page
@@ -574,6 +573,34 @@ func (h *FakeHolyArrs) Poster(ctx context.Context, id core.TitleID) ([]byte, str
 	return append([]byte(nil), h.PosterData...), h.PosterType, nil
 }
 
+// Artwork returns ArtworkData[ref], or core.ErrNotFound when it is not there.
+func (h *FakeHolyArrs) Artwork(ctx context.Context, ref string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.record("Artwork", ref); err != nil {
+		return nil, "", err
+	}
+	data, ok := h.ArtworkData[ref]
+	if !ok {
+		return nil, "", core.ErrNotFound
+	}
+	return append([]byte(nil), data...), "image/jpeg", nil
+}
+
+// Thumbnail returns ArtworkData[ref] like Artwork, recorded as "Thumbnail".
+func (h *FakeHolyArrs) Thumbnail(ctx context.Context, ref string) ([]byte, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.record("Thumbnail", ref); err != nil {
+		return nil, "", err
+	}
+	data, ok := h.ArtworkData[ref]
+	if !ok {
+		return nil, "", core.ErrNotFound
+	}
+	return append([]byte(nil), data...), "image/jpeg", nil
+}
+
 func (h *FakeHolyArrs) WatchPeople(ctx context.Context) ([]core.PersonWatch, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -644,25 +671,6 @@ func (h *FakeHolyArrs) CreateRequest(ctx context.Context, as core.UserID, what c
 		Status:  core.RequestPending,
 		AskedBy: []core.UserID{as},
 	}, nil
-}
-
-func (h *FakeHolyArrs) CleanupCandidates(ctx context.Context) ([]core.CleanupCandidate, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if err := h.record("CleanupCandidates"); err != nil {
-		return nil, err
-	}
-	return append([]core.CleanupCandidate(nil), h.CandidatesVal...), nil
-}
-
-func (h *FakeHolyArrs) DeleteTitle(ctx context.Context, id core.TitleID) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if err := h.record("DeleteTitle", id); err != nil {
-		return err
-	}
-	h.Deleted = append(h.Deleted, id)
-	return nil
 }
 
 // Events opens a new stream (buffer 64) that replaces the previous one. Feed
@@ -805,7 +813,6 @@ func NewDeps(t testing.TB) (core.Deps, *Fakes) {
 			InviteURL:        "https://discord.gg/test",
 			DashboardChannel: "100000000000000002",
 			AnnounceChannel:  "100000000000000003",
-			ModChannel:       "100000000000000004",
 			AdminRoleID:      "100000000000000005",
 			LinkedRoleID:     "100000000000000006",
 			RefreshEvery:     5 * time.Minute,

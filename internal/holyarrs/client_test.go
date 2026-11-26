@@ -402,8 +402,11 @@ func TestRemoveLink(t *testing.T) {
 		t.Errorf("403: %v", err)
 	}
 	for _, u := range []core.UserID{"21", "22"} {
-		if err := c.RemoveLink(ctx, u); err == nil || errors.Is(err, core.ErrUnsupported) {
+		err := c.RemoveLink(ctx, u)
+		if err == nil || errors.Is(err, core.ErrUnsupported) {
 			t.Errorf("user %s: %v, want a plain error", u, err)
+		} else if strings.Contains(err.Error(), "links/"+string(u)) {
+			t.Errorf("user %s: the error names the user id: %v", u, err)
 		}
 	}
 	// A name is not an id: nothing is sent.
@@ -420,7 +423,7 @@ func TestRemoveLink(t *testing.T) {
 	for _, st := range []int{404, 405} {
 		old, _ := newTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fail(w, st, "nope") }))
 		err := old.RemoveLink(ctx, "7")
-		if !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "DELETE /api/v1/plugin-hooks/links/7") {
+		if !errors.Is(err, core.ErrUnsupported) || !strings.Contains(err.Error(), "DELETE /api/v1/plugin-hooks/links/{user}") {
 			t.Errorf("status %d: %v", st, err)
 		}
 	}
@@ -442,12 +445,32 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	mux.HandleFunc("GET /api/v1/titles/10", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":10,"kind":"movie","name":"Bare","artwork":[]}`))
 	})
+	artCalls := 0
 	mux.HandleFunc("GET /api/v1/artwork/{name}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("name") != "p 9.jpg" || r.URL.Query().Get("size") != "500" {
-			t.Errorf("artwork %q size %q", r.PathValue("name"), r.URL.Query().Get("size"))
+		artCalls++
+		switch r.PathValue("name") {
+		case "p 9.jpg", "p9.jpg":
+			if r.URL.RawQuery != "" {
+				t.Errorf("artwork query %q", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("JPEGDATA"))
+		case "small.jpg":
+			if r.URL.RawQuery != "size=250" {
+				t.Errorf("thumbnail query %q", r.URL.RawQuery)
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("SMALL"))
+		case "big-small.jpg":
+			_, _ = w.Write(make([]byte, maxThumbnail+1))
+		case "huge.jpg":
+			_, _ = w.Write(make([]byte, maxArtwork+1))
+		case "closed.jpg":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"this plugin was not given the library.artwork.read permission"}`))
+		default:
+			http.NotFound(w, r)
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write([]byte("JPEGDATA"))
 	})
 	c, _ := newTest(t, mux)
 	ctx := context.Background()
@@ -456,11 +479,11 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	if err != nil || len(got) != 3 {
 		t.Fatalf("recently added %v err %v", got, err)
 	}
-	if got[0].ID != 9 || got[0].Kind != core.KindShow || got[0].PosterURL != "" || got[0].Year != 2017 ||
+	if got[0].ID != 9 || got[0].Kind != core.KindShow || got[0].PosterURL != "" || got[0].Artwork != "/api/v1/artwork/p9.jpg" || got[0].Year != 2017 ||
 		!got[0].AddedAt.Equal(time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)) {
 		t.Errorf("first %+v", got[0])
 	}
-	if got[1].ID != 3 || got[1].PosterURL != "https://image.tmdb.org/t/p/w500/x.jpg" || got[2].Kind != core.KindAlbum || !got[2].AddedAt.IsZero() {
+	if got[1].ID != 3 || got[1].PosterURL != "https://image.tmdb.org/t/p/w500/x.jpg" || got[1].Artwork != "" || got[2].Kind != core.KindAlbum || !got[2].AddedAt.IsZero() {
 		t.Errorf("rest %+v %+v", got[1], got[2])
 	}
 	if got, _ := c.RecentlyAdded(ctx, 1); len(got) != 1 {
@@ -468,7 +491,7 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	}
 
 	ti, err := c.Title(ctx, 9)
-	if err != nil || ti.Name != "Dark" || ti.Overview != "A town." || ti.PosterURL != "https://cdn.example/x.jpg" ||
+	if err != nil || ti.Name != "Dark" || ti.Overview != "A town." || ti.PosterURL != "https://cdn.example/x.jpg" || ti.Artwork != "/api/v1/artwork/p%209.jpg" ||
 		!ti.AddedAt.Equal(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("title %+v err %v", ti, err)
 	}
@@ -478,6 +501,45 @@ func TestRecentlyAddedTitleAndPoster(t *testing.T) {
 	}
 	if _, _, err := c.Poster(ctx, 10); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("no artwork: %v", err)
+	}
+
+	// Artwork reads a stored picture by the path a title carries.
+	data, ct, err = c.Artwork(ctx, got[0].Artwork)
+	if err != nil || string(data) != "JPEGDATA" || ct != "image/jpeg" {
+		t.Errorf("artwork %q %q %v", data, ct, err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/gone.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("missing picture: %v", err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/closed.jpg"); !errors.Is(err, core.ErrForbidden) {
+		t.Errorf("no permission: %v", err)
+	}
+	// Thumbnail asks for the small size and takes at most 1 MB.
+	if data, ct, err := c.Thumbnail(ctx, "/api/v1/artwork/small.jpg"); err != nil || string(data) != "SMALL" || ct != "image/jpeg" {
+		t.Errorf("thumbnail %q %q %v", data, ct, err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "/api/v1/artwork/big-small.jpg"); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("oversized thumbnail: %v", err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "/api/v1/artwork/gone.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("missing thumbnail: %v", err)
+	}
+	if _, _, err := c.Thumbnail(ctx, "https://image.tmdb.org/x.jpg"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("outside thumbnail: %v", err)
+	}
+	if _, _, err := c.Artwork(ctx, "/api/v1/artwork/huge.jpg"); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("a picture over the cap: %v", err)
+	}
+	// Anything that is not a stored picture is refused without a call.
+	before := artCalls
+	for _, ref := range []string{"", "/api/v1/artwork/", "https://image.tmdb.org/t/p/w500/x.jpg", "/api/v1/titles/9",
+		"/api/v1/artwork/../titles/9", "/api/v1/artwork/a.jpg?size=250", "/api/v1/artwork/a b.jpg"} {
+		if _, _, err := c.Artwork(ctx, ref); !errors.Is(err, core.ErrNotFound) {
+			t.Errorf("ref %q: %v", ref, err)
+		}
+	}
+	if artCalls != before {
+		t.Errorf("%d calls for refs that are not stored pictures", artCalls-before)
 	}
 }
 
@@ -545,20 +607,9 @@ func TestRecentlyWatchedAndCleanup(t *testing.T) {
 		t.Errorf("limit %+v", ws)
 	}
 
-	cs, err := c.CleanupCandidates(ctx)
-	if err != nil || len(cs) != 1 {
-		t.Fatalf("%v %v", cs, err)
-	}
-	if cs[0].Title.Name != "Heat" || cs[0].Title.Year != 1995 || cs[0].SizeBytes != 9000 || cs[0].LastWatched.IsZero() || fmt.Sprint(cs[0].AskedBy) != "[7]" {
-		t.Errorf("candidate %+v", cs[0])
-	}
-
 	enabled = false
 	if ws, err := c.RecentlyWatched(ctx, 10); err != nil || len(ws) != 0 {
 		t.Errorf("disabled watched: %v %v", ws, err)
-	}
-	if cs, err := c.CleanupCandidates(ctx); err != nil || len(cs) != 0 {
-		t.Errorf("disabled cleanup: %v %v", cs, err)
 	}
 }
 
@@ -585,7 +636,7 @@ func TestUpcoming(t *testing.T) {
 	if items[1].Label != "S02E06" || items[2].Label != "Hey What" || items[2].Title.Kind != core.KindAlbum {
 		t.Errorf("middle %+v %+v", items[1], items[2])
 	}
-	if items[3].Title.Name != "Dune" || items[3].Label != "" || items[3].Title.Kind != core.KindMovie || items[3].Title.PosterURL != "" || items[3].Title.Year != 2021 {
+	if items[3].Title.Name != "Dune" || items[3].Label != "" || items[3].Title.Kind != core.KindMovie || items[3].Title.PosterURL != "" || items[3].Title.Artwork != "/api/v1/artwork/d.jpg" || items[3].Title.Year != 2021 {
 		t.Errorf("movie %+v", items[3])
 	}
 }
@@ -731,33 +782,6 @@ func TestCreateRequest(t *testing.T) {
 		if _, err := c.CreateRequest(ctx, "7", core.SearchResult{Ref: ref}); err == nil {
 			t.Errorf("ref %q accepted", ref)
 		}
-	}
-}
-
-func TestDeleteTitle(t *testing.T) {
-	c, _ := newTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var in map[string]bool
-		_ = json.NewDecoder(r.Body).Decode(&in)
-		if r.Method != http.MethodPost || !in["apply"] || !in["delete_files"] {
-			t.Errorf("%s %s %v", r.Method, r.URL.Path, in)
-		}
-		switch r.URL.Path {
-		case "/api/v1/titles/5/delete":
-			writeJSON(w, 200, map[string]any{"title_id": 5})
-		case "/api/v1/titles/6/delete":
-			fail(w, 403, "this plugin was not given the library.delete permission")
-		default:
-			fail(w, 404, "no such Title")
-		}
-	}))
-	if err := c.DeleteTitle(context.Background(), 5); err != nil {
-		t.Error(err)
-	}
-	if err := c.DeleteTitle(context.Background(), 6); !errors.Is(err, core.ErrForbidden) {
-		t.Errorf("got %v", err)
-	}
-	if err := c.DeleteTitle(context.Background(), 7); !errors.Is(err, core.ErrNotFound) {
-		t.Errorf("got %v", err)
 	}
 }
 

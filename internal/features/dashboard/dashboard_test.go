@@ -1,9 +1,14 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/NotCavnfox/holyarrs-discord/internal/core"
+	"github.com/NotCavnfox/holyarrs-discord/internal/postergrid"
 )
 
 func onCfg() core.Config {
@@ -69,14 +75,11 @@ func TestTilesContentAndPrivacy(t *testing.T) {
 	tiles := byTitle(sends)
 
 	added := tiles["Recently added"]
-	if added.Thumbnail != "https://img/new.jpg" {
-		t.Errorf("thumbnail = %q, want the newest title's poster", added.Thumbnail)
+	if want := "1\\. **New \\*One\\*** (2024)\n2\\. **Old One** (1999)"; added.Description != want {
+		t.Errorf("recently added = %q, want %q", added.Description, want)
 	}
-	if !strings.Contains(added.Description, `New \*One\*`) {
-		t.Errorf("markdown not escaped: %q", added.Description)
-	}
-	if strings.Index(added.Description, "New") > strings.Index(added.Description, "Old One") {
-		t.Errorf("newest should come first: %q", added.Description)
+	if added.Thumbnail != "" || added.Image != "attachment://added.jpg" {
+		t.Errorf("thumbnail %q image %q", added.Thumbnail, added.Image)
 	}
 
 	w := tiles["Recently watched"].Description
@@ -101,8 +104,18 @@ func TestTilesContentAndPrivacy(t *testing.T) {
 	}
 
 	up := tiles["Coming up"].Description
-	if strings.Contains(up, "Past") || strings.Index(up, "Soon") > strings.Index(up, "Later") || !strings.Contains(up, "S01E02") {
-		t.Errorf("upcoming = %q", up)
+	wantUp := fmt.Sprintf("1\\. **Soon** · <t:%d:R>\n2\\. **Later** · S01E02 · <t:%d:R>",
+		r.clock.Now().Add(24*time.Hour).Unix(), r.clock.Now().Add(72*time.Hour).Unix())
+	if up != wantUp {
+		t.Errorf("upcoming = %q, want %q", up, wantUp)
+	}
+	// Only the two poster tiles carry a picture.
+	for _, m := range sends {
+		e := m.Msg.Embeds[0]
+		grid := e.Title == "Recently added" || e.Title == "Coming up"
+		if (len(m.Msg.Files) == 1) != grid || (e.Image != "") != grid {
+			t.Errorf("%s: files=%d image=%q", e.Title, len(m.Msg.Files), e.Image)
+		}
 	}
 	for _, e := range tiles {
 		if !e.Time.Equal(r.clock.Now()) || e.Footer != "Updated" {
@@ -151,6 +164,319 @@ func TestHashSkipsEdits(t *testing.T) {
 	if len(sends) != 4 || len(edits) != 1 {
 		t.Fatalf("after restart: sends=%d edits=%d", len(sends), len(edits))
 	}
+}
+
+// ---- poster-grid tiles ----
+
+func posterJPEG(t testing.TB, c color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 60, 90))
+	draw.Draw(img, img.Bounds(), image.NewUniform(c), image.Point{}, draw.Src)
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func artRef(id int) string { return fmt.Sprintf("/api/v1/artwork/p%d.jpg", id) }
+
+// gridRig has n recently added titles, newest first, each with a stored
+// poster, and no other tile content.
+func gridRig(t testing.TB, n int) *rig {
+	r := newRig(onCfg())
+	r.ha.art = map[string][]byte{}
+	r.ha.artErr = map[string]error{}
+	for i := 1; i <= n; i++ {
+		r.ha.recent = append(r.ha.recent, core.Title{ID: core.TitleID(i), Name: fmt.Sprintf("Title %d", i), Year: 2000 + i,
+			AddedAt: r.clock.Now().Add(-time.Duration(i) * time.Hour), Artwork: artRef(i)})
+		r.ha.art[artRef(i)] = posterJPEG(t, color.RGBA{0xc0, 0x30, 0x30, 0xff})
+	}
+	return r
+}
+
+// addedTile is the newest version of the Recently added tile.
+func addedTile(t testing.TB, r *rig) sentMsg {
+	t.Helper()
+	sends, edits, _, _, _ := r.dc.snap()
+	var out *sentMsg
+	for _, list := range [][]sentMsg{sends, edits} {
+		for i := range list {
+			if list[i].Msg.Embeds[0].Title == "Recently added" {
+				out = &list[i]
+			}
+		}
+	}
+	if out == nil {
+		t.Fatal("no Recently added tile")
+	}
+	return *out
+}
+
+func gridImage(t testing.TB, m sentMsg) image.Image {
+	t.Helper()
+	if len(m.Msg.Files) != 1 {
+		t.Fatalf("files = %d, want 1", len(m.Msg.Files))
+	}
+	f := m.Msg.Files[0]
+	if f.Name != "added.jpg" || f.ContentType != "image/jpeg" || m.Msg.Embeds[0].Image != "attachment://added.jpg" {
+		t.Fatalf("file %q %q, embed image %q", f.Name, f.ContentType, m.Msg.Embeds[0].Image)
+	}
+	if len(f.Data) > 1<<20 {
+		t.Errorf("upload is %d bytes", len(f.Data))
+	}
+	img, err := jpeg.Decode(bytes.NewReader(f.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != postergrid.Width || b.Dy() != postergrid.Height {
+		t.Fatalf("picture is %v", b)
+	}
+	return img
+}
+
+// cellIsPoster reports whether grid cell i (0 based) shows the red test poster.
+func cellIsPoster(img image.Image, i int) bool {
+	x := postergrid.Width/6 + (i%3)*postergrid.Width/3
+	y := postergrid.Height/6 + (i/3)*postergrid.Height/3
+	r, g, b, _ := img.At(x, y).RGBA()
+	return r>>8 > 0x90 && g>>8 < 0x60 && b>>8 < 0x60
+}
+
+func TestGridTile(t *testing.T) {
+	for _, n := range []int{1, 9, 12} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			r := gridRig(t, n)
+			if err := New(r.deps).Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			m := addedTile(t, r)
+			img := gridImage(t, m)
+			shown := min(n, gridCells)
+			for i := 0; i < gridCells; i++ {
+				if cellIsPoster(img, i) != (i < shown) {
+					t.Errorf("cell %d: poster = %v", i, cellIsPoster(img, i))
+				}
+			}
+			// The numbered list matches the grid: newest first, at most nine.
+			lines := strings.Split(m.Msg.Embeds[0].Description, "\n")
+			if len(lines) != shown {
+				t.Fatalf("list has %d lines, want %d: %q", len(lines), shown, lines)
+			}
+			for i, l := range lines {
+				if want := fmt.Sprintf("%d\\. **Title %d** (%d)", i+1, i+1, 2001+i); l != want {
+					t.Errorf("line %d = %q, want %q", i, l, want)
+				}
+			}
+			if got := r.ha.count("artwork"); got != shown {
+				t.Errorf("%d poster reads, want %d", got, shown)
+			}
+		})
+	}
+}
+
+func TestGridTileWithNothing(t *testing.T) {
+	r := gridRig(t, 0)
+	if err := New(r.deps).Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sends, _, _, _, _ := r.dc.snap()
+	for _, m := range sends {
+		e := m.Msg.Embeds[0]
+		if e.Title != "Recently added" && e.Title != "Coming up" {
+			continue
+		}
+		if len(m.Msg.Files) != 0 || e.Image != "" || e.Description != "Nothing here yet." {
+			t.Errorf("%s: files=%d image=%q description=%q", e.Title, len(m.Msg.Files), e.Image, e.Description)
+		}
+	}
+	if r.ha.count("artwork") != 0 {
+		t.Error("posters were read for an empty tile")
+	}
+}
+
+func TestGridMissingPosters(t *testing.T) {
+	r := gridRig(t, 5)
+	r.ha.recent[1].Artwork = ""                                   // no stored poster
+	delete(r.ha.art, artRef(3))                                   // stored, but gone
+	r.ha.art[artRef(4)] = []byte("not a picture")                 // unusable
+	r.ha.art[artRef(5)] = make([]byte, maxPosterBytes+1)          // over the size cap
+	r.ha.recent[4].PosterURL = "https://image.tmdb.org/t/p/x.jpg" // never fetched: not a host we may reach
+	f := New(r.deps)
+	if err := f.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	img := gridImage(t, addedTile(t, r))
+	for i := 0; i < gridCells; i++ {
+		if cellIsPoster(img, i) != (i == 0) {
+			t.Errorf("cell %d: poster = %v", i, cellIsPoster(img, i))
+		}
+	}
+	if got := r.ha.count("artwork"); got != 4 {
+		t.Errorf("%d poster reads, want 4 (none for the title without one)", got)
+	}
+	// None of these will get better by asking again.
+	if err := f.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, edits, _, _, _ := r.dc.snap(); len(edits) != 0 || r.ha.count("artwork") != 4 {
+		t.Errorf("edits=%d reads=%d after a second refresh", len(edits), r.ha.count("artwork"))
+	}
+}
+
+func TestGridSharedPosterIsReadOnce(t *testing.T) {
+	r := gridRig(t, 0)
+	r.ha.art["/api/v1/artwork/show.jpg"] = posterJPEG(t, color.RGBA{0xc0, 0x30, 0x30, 0xff})
+	for i := 1; i <= 12; i++ { // twelve episodes of one show
+		r.ha.upcoming = append(r.ha.upcoming, core.CalendarItem{Label: fmt.Sprintf("S01E%02d", i), Date: r.clock.Now().Add(time.Duration(i) * 24 * time.Hour),
+			Title: core.Title{ID: 4, Name: "The Show", Year: 2025, Artwork: "/api/v1/artwork/show.jpg"}})
+	}
+	if err := New(r.deps).Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ha.count("artwork"); got != 1 {
+		t.Errorf("%d poster reads, want 1", got)
+	}
+	sends, _, _, _, _ := r.dc.snap()
+	up := byTitle(sends)["Coming up"]
+	lines := strings.Split(up.Description, "\n")
+	if len(lines) != gridCells || up.Image != "attachment://upcoming.jpg" ||
+		lines[8] != fmt.Sprintf("9\\. **The Show** (2025) · S01E09 · <t:%d:R>", r.clock.Now().Add(9*24*time.Hour).Unix()) {
+		t.Errorf("coming up: image %q, lines %q", up.Image, lines)
+	}
+}
+
+func TestGridSkipsWhenUnchanged(t *testing.T) {
+	r := gridRig(t, 9)
+	f := New(r.deps)
+	ctx := context.Background()
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reads := r.ha.count("artwork")
+	r.clock.Add(10 * time.Minute)
+	for _, ft := range []*Feature{f, New(r.deps)} { // the same process, then a restart
+		if err := ft.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sends, edits, _, _, _ := r.dc.snap()
+	if len(sends) != 4 || len(edits) != 0 || r.ha.count("artwork") != reads {
+		t.Fatalf("unchanged: sends=%d edits=%d poster reads %d -> %d", len(sends), len(edits), reads, r.ha.count("artwork"))
+	}
+
+	// A new poster for the same title is a change, with the text the same.
+	r.ha.mu.Lock()
+	r.ha.recent[2].Artwork = "/api/v1/artwork/fresh.jpg"
+	r.ha.art["/api/v1/artwork/fresh.jpg"] = posterJPEG(t, color.RGBA{0xc0, 0x30, 0x30, 0xff})
+	r.ha.mu.Unlock()
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sends, edits, _, _, _ = r.dc.snap()
+	if len(sends) != 4 || len(edits) != 1 || edits[0].ID != sends[0].ID {
+		t.Fatalf("want one edit of the added tile: sends=%d edits=%d", len(sends), len(edits))
+	}
+	// The edit carries exactly one picture; the adapter drops the old one.
+	if len(edits[0].Msg.Files) != 1 || edits[0].Msg.Files[0].Name != "added.jpg" {
+		t.Errorf("edit files = %+v", len(edits[0].Msg.Files))
+	}
+}
+
+func TestGridRetriesFailedPosterReads(t *testing.T) {
+	r := gridRig(t, 3)
+	r.ha.artErr[artRef(2)] = errors.New("holyarrs is busy")
+	f := New(r.deps)
+	ctx := context.Background()
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	img := gridImage(t, addedTile(t, r))
+	if !cellIsPoster(img, 0) || cellIsPoster(img, 1) || !cellIsPoster(img, 2) {
+		t.Fatal("want the failed poster as a title cell and the others drawn")
+	}
+	// It is tried again on later refreshes, a few times and no more.
+	for i := 0; i < posterRetries+3; i++ {
+		if err := f.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, edits, _, _, _ := r.dc.snap()
+	if len(edits) != posterRetries-1 {
+		t.Fatalf("%d edits while the read keeps failing, want %d", len(edits), posterRetries-1)
+	}
+
+	// When the read works on a retry, the tile is redrawn once and left alone.
+	r2 := gridRig(t, 3)
+	r2.ha.artErr[artRef(2)] = errors.New("holyarrs is busy")
+	f2 := New(r2.deps)
+	if err := f2.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r2.ha.mu.Lock()
+	delete(r2.ha.artErr, artRef(2))
+	r2.ha.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		if err := f2.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, edits, _, _, _ := r2.dc.snap(); len(edits) != 1 || !cellIsPoster(gridImage(t, edits[0]), 1) {
+		t.Fatalf("%d edits after the read recovered, want 1 with the poster", len(edits))
+	}
+}
+
+func TestGridWithoutArtworkPermission(t *testing.T) {
+	r := gridRig(t, 2)
+	for i := 1; i <= 2; i++ {
+		r.ha.artErr[artRef(i)] = fmt.Errorf("no permission: %w", core.ErrForbidden)
+	}
+	f := New(r.deps)
+	for i := 0; i < 3; i++ {
+		if err := f.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Title cells, and no retry: only the owner can change this.
+	img := gridImage(t, addedTile(t, r))
+	if cellIsPoster(img, 0) || cellIsPoster(img, 1) {
+		t.Error("posters drawn without the permission")
+	}
+	if _, edits, _, _, _ := r.dc.snap(); len(edits) != 0 || r.ha.count("artwork") != 2 {
+		t.Errorf("edits=%d reads=%d", len(edits), r.ha.count("artwork"))
+	}
+}
+
+func TestGridReadsAreBounded(t *testing.T) {
+	r := gridRig(t, 9)
+	var mu sync.Mutex
+	now, peak := 0, 0
+	r.deps.HA = &slowArt{fakeHA: r.ha, enter: func() {
+		mu.Lock()
+		now++
+		peak = max(peak, now)
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		mu.Lock()
+		now--
+		mu.Unlock()
+	}}
+	if err := New(r.deps).Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if peak < 1 || peak > posterFetchers {
+		t.Errorf("%d poster reads at once, want at most %d", peak, posterFetchers)
+	}
+}
+
+type slowArt struct {
+	*fakeHA
+	enter func()
+}
+
+func (s *slowArt) Thumbnail(ctx context.Context, ref string) ([]byte, string, error) {
+	s.enter()
+	return s.fakeHA.Thumbnail(ctx, ref)
 }
 
 func TestRecreateWhenMessageDeleted(t *testing.T) {
@@ -493,4 +819,99 @@ func (e *countingEvents) names() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]string(nil), e.subs...)
+}
+
+// A tile deleted in Discord whose content did not change is not looked at by
+// the timed refresh (it makes no Discord call for an unchanged tile), but
+// /dashboard refresh draws every tile again and so puts it back.
+func TestManualRefreshRecreatesDeletedTile(t *testing.T) {
+	r := gridRig(t, 2)
+	f := New(r.deps)
+	ctx := context.Background()
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sends, _, _, _, _ := r.dc.snap()
+	if len(sends) != 4 {
+		t.Fatalf("sends = %d", len(sends))
+	}
+	gone := sends[0].ID // the Recently added tile, with its poster grid
+	r.dc.mu.Lock()
+	r.dc.editErr[gone] = fmt.Errorf("wrapped: %w", core.ErrNotFound)
+	r.dc.mu.Unlock()
+
+	if err := f.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if sends, edits, _, _, _ := r.dc.snap(); len(sends) != 4 || len(edits) != 0 {
+		t.Fatalf("unchanged timed refresh: sends=%d edits=%d", len(sends), len(edits))
+	}
+
+	h := f.Commands()[0].Sub[0].Handle
+	if err := h(ctx, &core.Interaction{UserID: "x", IsAdmin: true}); err != nil {
+		t.Fatal(err)
+	}
+	sends, edits, _, pins, _ := r.dc.snap()
+	if len(sends) != 5 || len(edits) != 3 || len(pins) != 5 {
+		t.Fatalf("manual refresh: sends=%d edits=%d pins=%d, want 5, 3, 5", len(sends), len(edits), len(pins))
+	}
+	if sends[4].Msg.Embeds[0].Title != "Recently added" || pins[4] != sends[4].ID {
+		t.Fatalf("new tile: %+v", sends[4].Msg.Embeds[0])
+	}
+	if img := gridImage(t, sends[4]); !cellIsPoster(img, 0) || !cellIsPoster(img, 1) {
+		t.Error("the new tile has no posters")
+	}
+	// The grid is drawn from the small posters only, never the full-size ones.
+	if r.ha.count("artwork") != 4 || r.ha.count("artwork-full") != 0 {
+		t.Errorf("small poster reads = %d, full-size reads = %d", r.ha.count("artwork"), r.ha.count("artwork-full"))
+	}
+	if rp := r.dc.lastReply(); rp.Kind != "followup" || rp.Msg.Content != "Dashboard refreshed." {
+		t.Fatalf("reply = %+v", rp)
+	}
+	var doc tilesDoc
+	_ = r.store.Load(storeDoc, &doc)
+	if doc.Tiles[tileAdded].MessageID != sends[4].ID {
+		t.Fatalf("state not updated: %+v", doc.Tiles[tileAdded])
+	}
+}
+
+// Turning show_watching off, or unlinking, reaches the dashboard as a link
+// event: the name leaves Top watchers without waiting for the timer.
+func TestRunRefreshesOnLinkEvents(t *testing.T) {
+	for _, typ := range []core.EventType{core.EventLinkChanged, core.EventLinkRemoved} {
+		t.Run(string(typ), func(t *testing.T) {
+			r := newRig(onCfg())
+			seed(r)
+			f := New(r.deps)
+			f.debounce = 5 * time.Millisecond
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- f.Run(ctx) }()
+			if !waitFor(func() bool { s, _, _, _, _ := r.dc.snap(); return len(s) == 4 }) {
+				t.Fatal("initial tiles not sent")
+			}
+			sends, _, _, _, _ := r.dc.snap()
+			if top := byTitle(sends)["Top watchers"].Description; !strings.Contains(top, "<@1001>") {
+				t.Fatalf("seed: %q", top)
+			}
+			if typ == core.EventLinkRemoved {
+				_ = r.links.Remove("1001")
+			} else {
+				_ = r.links.Put(core.Link{DiscordID: "1001", UserID: "u1", UserName: "Alice", ShowWatching: false})
+			}
+			r.ev.ch <- core.Event{Type: typ, Member: "1001"}
+			if !waitFor(func() bool { _, e, _, _, _ := r.dc.snap(); return len(e) == 1 }) {
+				t.Fatal("link event did not cause a refresh")
+			}
+			_, edits, _, _, _ := r.dc.snap()
+			if e := edits[0].Msg.Embeds[0]; e.Title != "Top watchers" || strings.Contains(e.Description, "1001") {
+				t.Fatalf("edit = %q %q", e.Title, e.Description)
+			}
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }

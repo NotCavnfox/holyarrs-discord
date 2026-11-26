@@ -1,0 +1,114 @@
+# Runs on every pull request and on main. The job names (test, build, manifest)
+# are the required status checks: do not rename them.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "These files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  # The same three builds the HolyArrs plugin catalogue runs when it publishes.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Build amd64
+        run: GOARCH=amd64 go build -trimpath -mod=readonly -o build/amd64/plugin .
+      - name: Build arm64
+        run: GOARCH=arm64 go build -trimpath -mod=readonly -o build/arm64/plugin .
+      - name: Build armv7
+        run: GOARCH=arm GOARM=7 go build -trimpath -mod=readonly -o build/armv7/plugin .
+
+  # The catalogue's own check on holyarrs-plugin.json and the plugin folder,
+  # against a temporary entry file for this commit.
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: HolyArrs/HolyArrs-Plugins
+          path: catalogue
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the schema checker
+        run: python -m pip install --disable-pip-version-check "jsonschema==4.23.0"
+      - name: Write a temporary entry file
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          jq -n --slurpfile m plugin/holyarrs-plugin.json --arg commit "$COMMIT" '{
+            id: "discord",
+            name: $m[0].name,
+            description: $m[0].description,
+            authors: ["NotCavnfox"],
+            repo: "https://github.com/NotCavnfox/holyarrs-discord",
+            tag: "1.0.0",
+            commit: $commit,
+            min_app_version: $m[0].min_app_version
+          }' > catalogue/catalog/active/discord.json
+          cat catalogue/catalog/active/discord.json
+      - name: Run the catalogue check
+        working-directory: catalogue
+        run: python .github/scripts/check.py catalog/active/discord.json --src "$GITHUB_WORKSPACE/plugin"
+
+  # Known vulnerabilities in the Go version and the modules the code really calls.
+  # Not a required check: a new advisory can turn it red without any change here.
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...

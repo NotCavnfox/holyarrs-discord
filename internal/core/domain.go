@@ -6,10 +6,7 @@
 // features. Only main wires concrete types together.
 package core
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 // UserID is a HolyArrs user id, kept as text so the wire type can change.
 type UserID string
@@ -45,6 +42,10 @@ type Title struct {
 	// source) that Discord can fetch by itself. Empty when there is none; then
 	// use HolyArrs.Poster and upload the bytes.
 	PosterURL string
+	// Artwork names the poster HolyArrs has stored for the title, for
+	// HolyArrs.Artwork. Empty when it has none. It is opaque and not a URL
+	// Discord could fetch.
+	Artwork string
 }
 
 // PersonWatch is the polled watch total for one media-server account.
@@ -105,16 +106,9 @@ type SearchResult struct {
 	InLibrary bool
 }
 
-// CleanupCandidate is a title HolyArrs suggests could be deleted.
-type CleanupCandidate struct {
-	Title       Title
-	SizeBytes   int64
-	LastWatched time.Time
-	AskedBy     []UserID
-}
-
 // EventType names the events features react to. Adapters map wire names onto
-// these; anything else arrives as EventOther with Raw set.
+// these; anything else arrives as EventOther with its WireType. The link
+// events are the bot's own: the link book publishes them (see main).
 type EventType string
 
 const (
@@ -124,17 +118,21 @@ const (
 	EventRequestAvailable EventType = "request.available"
 	EventRequestDeclined  EventType = "request.declined"
 	EventOther            EventType = "other"
+	// EventLinkChanged: a link was added or its choices changed.
+	// EventLinkRemoved: a member's link is gone. Both carry Member only.
+	EventLinkChanged EventType = "link.changed"
+	EventLinkRemoved EventType = "link.removed"
 )
 
-// Event is something that happened in HolyArrs. Events carry ids only; look
-// the rest up through the HolyArrs port.
+// Event is something that happened in HolyArrs, or to a link. Events carry
+// ids only; look the rest up through the HolyArrs port or the link book.
 type Event struct {
 	Type      EventType
 	WireType  string
 	TitleID   TitleID
 	RequestID string
 	At        time.Time
-	Raw       json.RawMessage
+	Member    string // Discord id; set on link events only
 }
 
 // RemoteLink is one link as HolyArrs holds it for this plugin. External is the
@@ -151,7 +149,10 @@ type Link struct {
 	UserID       UserID
 	UserName     string
 	ShowWatching bool // opt-in: show this person's name next to what they watch
-	LinkedAt     time.Time
+	// AlertsOff is the opt-out from the DM sent when a title the person asked
+	// for is available. The zero value means alerts are on.
+	AlertsOff bool
+	LinkedAt  time.Time
 }
 
 // Config is everything the owner sets, read once at start. Saving settings
@@ -162,7 +163,6 @@ type Config struct {
 	InviteURL        string
 	DashboardChannel string
 	AnnounceChannel  string
-	ModChannel       string
 	AdminRoleID      string
 	LinkedRoleID     string
 	RefreshEvery     time.Duration

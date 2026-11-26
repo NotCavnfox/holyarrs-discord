@@ -75,9 +75,9 @@ func (c *Client) Links(ctx context.Context) ([]core.RemoteLink, error) {
 // or not there was one. core.ErrUnsupported as for Links.
 func (c *Client) RemoveLink(ctx context.Context, user core.UserID) error {
 	if !validUser(user) {
-		return fmt.Errorf("holyarrs: user id %q is not a number: %w", string(user), core.ErrNotFound)
+		return fmt.Errorf("holyarrs: the user id is not a number: %w", core.ErrNotFound)
 	}
-	cl := call{method: http.MethodDelete, path: linksPath + "/" + string(user)}
+	cl := call{method: http.MethodDelete, path: linksPath + "/" + string(user), errPath: linksPath + "/{user}"}
 	rep, err := c.do(ctx, cl)
 	if err != nil {
 		return unsupported(err)

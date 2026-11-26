@@ -139,7 +139,7 @@ func (g *Gateway) Open(ctx context.Context, cmds []core.Command, router core.Int
 		return fail("register commands", err)
 	}
 	g.opened = true
-	g.log.Info("discord connected", "guild", g.guildID, "commands", len(appCmds))
+	g.log.Info("discord connected", "commands", len(appCmds))
 	return nil
 }
 
@@ -198,7 +198,7 @@ func (g *Gateway) dispatch(i *discordgo.Interaction) {
 			return
 		}
 		if r.adminOnly && !in.IsAdmin {
-			g.log.Info("admin command refused", "command", in.Command, "user", in.UserID)
+			g.log.Info("admin command refused", "command", in.Command)
 			g.notify(in, refuseText)
 			return
 		}
@@ -211,7 +211,7 @@ func (g *Gateway) dispatch(i *discordgo.Interaction) {
 		ctx, cancel := context.WithTimeout(base, handlerTimeout)
 		defer cancel()
 		if err := safely(ctx, handle, in); err != nil {
-			g.log.Error("interaction failed", "interaction", name, "user", in.UserID, "err", err)
+			g.log.Error("interaction failed", "interaction", name, "err", err)
 			g.notify(in, failText)
 		}
 	}()
@@ -242,7 +242,7 @@ func (g *Gateway) notifyFailure(in *core.Interaction, text string) {
 	m := core.Message{Content: text}
 	if err := g.Respond(ctx, in, m, true); err != nil {
 		if err := g.FollowUp(ctx, in, m, true); err != nil {
-			g.log.Warn("could not tell the caller about a failure", "user", in.UserID, "err", err)
+			g.log.Warn("could not tell the caller about a failure", "err", err)
 		}
 	}
 }

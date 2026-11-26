@@ -382,7 +382,7 @@ func readyKey(id core.TitleID, discordID string) string {
 }
 
 // notifyReady DMs every linked person who asked for a title that is now in
-// the library, once per title and member. HolyArrs gives a plugin no list of
+// the library and has alerts on, once per title and member. HolyArrs gives a plugin no list of
 // requests, so this works from the title: an event without a title id is
 // ignored.
 func (f *Feature) notifyReady(ctx context.Context, id core.TitleID) {
@@ -398,7 +398,8 @@ func (f *Feature) notifyReady(ctx context.Context, id core.TitleID) {
 	told := map[string]bool{}
 	for _, uid := range asked[id] {
 		link, ok := f.d.Links.ByUser(uid)
-		if !ok || link.DiscordID == "" || told[link.DiscordID] || f.seen[readyKey(id, link.DiscordID)] {
+		// AlertsOff is the member's own choice (/privacy alerts:off).
+		if !ok || link.AlertsOff || link.DiscordID == "" || told[link.DiscordID] || f.seen[readyKey(id, link.DiscordID)] {
 			continue
 		}
 		told[link.DiscordID] = true
