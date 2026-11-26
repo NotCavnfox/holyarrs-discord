@@ -1,9 +1,16 @@
 # Weekly update pull requests for Go modules and for the pinned GitHub Actions.
+# Each ecosystem arrives as one grouped pull request.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: "/"
     schedule: { interval: weekly }
+    groups:
+      go-modules:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ["*"]
