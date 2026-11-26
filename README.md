@@ -38,13 +38,13 @@
 | | |
 |---|---|
 | 🔗 **Linking** | `/link` gives a private one-time code. Type it in HolyArrs and the two accounts are linked. |
-| 🖼️ **Poster tiles** | Pinned tiles that update themselves: Recently added and Coming up as 3x3 poster grids, plus Recently watched and Top watchers. |
+| 🖼️&nbsp;**Poster&nbsp;tiles** | Pinned tiles that update themselves: Recently added and Coming up as 3x3 poster grids, plus Recently watched and Top watchers. |
 | 🙋 **Requests** | `/search` and `/request` ask for a movie or show as the linked person, under their own limits in HolyArrs. |
 | 📋 **Status** | `/status` shows where your requests stand. |
-| 🔔 **Ready pings** | A DM when your request is approved, declined or available. `/privacy alerts:off` turns them off. |
-| 📣 **Announcements** | A post in a channel you choose when a title is added. |
-| 🏠 **Home card** | A Discord card on the HolyArrs Home page with the invite link and how to link. |
-| 🕶️ **Privacy first** | Names show next to watch activity only for members who opt in. |
+| 🔔&nbsp;**Ready&nbsp;pings** | A DM when your request is approved, declined or available. `/privacy alerts:off` turns them off. |
+| 📣&nbsp;**Announcements** | A post in a channel you choose when a title is added. |
+| 🏠&nbsp;**Home&nbsp;card** | A Discord card on the HolyArrs Home page with the invite link and how to link. |
+| 🕶️&nbsp;**Privacy&nbsp;first** | Names show next to watch activity only for members who opt in. |
 
 It deletes nothing, and it has no voice features.
 

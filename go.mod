@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
-	golang.org/x/image v0.47.0
+	golang.org/x/image v0.48.0
 )
 
 require (
