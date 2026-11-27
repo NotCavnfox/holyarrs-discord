@@ -6,11 +6,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/NotCavnfox/holyarrs-discord/ci.yml?branch=main&style=flat-square&logo=github&logoColor=white&label=build" alt="Build"></a>
-  <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/NotCavnfox/holyarrs-discord/codeql.yml?branch=main&style=flat-square&label=code%20scanning" alt="Code scanning"></a>
-  <a href="https://github.com/NotCavnfox/holyarrs-discord/releases"><img src="https://img.shields.io/github/v/tag/NotCavnfox/holyarrs-discord?sort=semver&style=flat-square&label=version&color=3b3f8f" alt="Version"></a>
-  <img src="https://img.shields.io/badge/HolyArrs-1.3.2%2B-3b3f8f?style=flat-square" alt="Needs HolyArrs 1.3.2 or newer">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-3b3f8f?style=flat-square" alt="Licence: MIT"></a>
+  <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/ci.yml"><img src="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/codeql.yml"><img src="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
+  <a href="https://github.com/NotCavnfox/holyarrs-discord/releases"><img src="https://img.shields.io/github/v/tag/NotCavnfox/holyarrs-discord?sort=semver&style=flat&label=version&color=3b3f8f" alt="Version"></a>
+  <img src="https://img.shields.io/badge/HolyArrs-1.3.2%2B-3b3f8f?style=flat" alt="Needs HolyArrs 1.3.2 or newer">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-3b3f8f?style=flat" alt="Licence: MIT"></a>
 </p>
 
 <h3 align="center">Your HolyArrs library, in your Discord server.</h3>
@@ -30,6 +30,13 @@
 > [!NOTE]
 > Needs HolyArrs 1.3.2 or newer. You bring your own Discord application and bot token.
 > This plugin is not made by or affiliated with Discord or HolyArrs.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/flow-light.svg">
+    <img src="docs/assets/flow-dark.svg" alt="How linking works: a member runs /link in Discord and gets a private code, types it in HolyArrs under My account, the bot confirms the link, and from then on they request titles and get ready pings as themselves" width="100%">
+  </picture>
+</p>
 
 <a id="what"></a>
 

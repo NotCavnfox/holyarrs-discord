@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 300" width="1280" height="300" role="img" aria-label="How linking works: run /link in Discord, type the code in HolyArrs, the bot confirms, then request and get pings as yourself">
+<rect width="1280" height="300" rx="24" fill="#14162e"/>
+<g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<text x="640" y="48" text-anchor="middle" font-size="24" font-weight="700" fill="#ffffff">How linking works</text>
+<rect x="38" y="78" width="268" height="180" rx="18" fill="#262a66"/>
+<circle cx="76" cy="120" r="20" fill="#3b3f8f"/><text x="76" y="127" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">1</text>
+<text x="108" y="128" font-size="23" font-weight="700" fill="#ffffff">In Discord</text>
+<text x="60" y="182" font-size="18" fill="#c3c7f5">A member runs /link</text>
+<text x="60" y="210" font-size="18" fill="#c3c7f5">and gets a private code</text>
+<path d="M314 168h22m-9 -8l9 8l-9 8" fill="none" stroke="#8f95e8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="350" y="78" width="268" height="180" rx="18" fill="#262a66"/>
+<circle cx="388" cy="120" r="20" fill="#3b3f8f"/><text x="388" y="127" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">2</text>
+<text x="420" y="128" font-size="23" font-weight="700" fill="#ffffff">In HolyArrs</text>
+<text x="372" y="182" font-size="18" fill="#c3c7f5">They type the code under</text>
+<text x="372" y="210" font-size="18" fill="#c3c7f5">My account, Linked plugins</text>
+<path d="M626 168h22m-9 -8l9 8l-9 8" fill="none" stroke="#8f95e8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="662" y="78" width="268" height="180" rx="18" fill="#262a66"/>
+<circle cx="700" cy="120" r="20" fill="#3b3f8f"/><text x="700" y="127" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">3</text>
+<text x="732" y="128" font-size="23" font-weight="700" fill="#ffffff">Linked</text>
+<text x="684" y="182" font-size="18" fill="#c3c7f5">The bot sees the link</text>
+<text x="684" y="210" font-size="18" fill="#c3c7f5">within seconds and says so</text>
+<path d="M938 168h22m-9 -8l9 8l-9 8" fill="none" stroke="#8f95e8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="974" y="78" width="268" height="180" rx="18" fill="#262a66"/>
+<circle cx="1012" cy="120" r="20" fill="#3b3f8f"/><text x="1012" y="127" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">4</text>
+<text x="1044" y="128" font-size="23" font-weight="700" fill="#ffffff">From then on</text>
+<text x="996" y="182" font-size="18" fill="#c3c7f5">/request and /status as</text>
+<text x="996" y="210" font-size="18" fill="#c3c7f5">themselves, and ready pings</text>
+</g></svg>
