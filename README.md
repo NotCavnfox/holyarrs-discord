@@ -8,9 +8,8 @@
 <p align="center">
   <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/ci.yml"><img src="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/codeql.yml"><img src="https://github.com/NotCavnfox/holyarrs-discord/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL"></a>
-  <a href="https://github.com/NotCavnfox/holyarrs-discord/releases"><img src="https://img.shields.io/github/v/tag/NotCavnfox/holyarrs-discord?sort=semver&style=flat&label=version&color=3b3f8f" alt="Version"></a>
-  <img src="https://img.shields.io/badge/HolyArrs-1.3.2%2B-3b3f8f?style=flat" alt="Needs HolyArrs 1.3.2 or newer">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-3b3f8f?style=flat" alt="Licence: MIT"></a>
+  <a href="https://github.com/NotCavnfox/holyarrs-discord/releases"><img src="docs/assets/badge-holyarrs.svg" alt="Needs HolyArrs 1.3.2 or newer"></a>
+  <a href="LICENSE"><img src="docs/assets/badge-licence.svg" alt="Licence: MIT"></a>
 </p>
 
 <h3 align="center">Your HolyArrs library, in your Discord server.</h3>
