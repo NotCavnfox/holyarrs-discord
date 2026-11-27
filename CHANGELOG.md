@@ -9,6 +9,12 @@ All notable changes to this plugin are listed here. The format follows
 ### Changed
 
 - A grid tile that leaves out a stored poster now logs why (a reason and size, never a name).
+- The `drew tile` log line says `listed` for posters HolyArrs lists, since a listed poster can be
+  missing from its store.
+
+### Docs
+
+- README: a sample grid picture, and a known limit for posters HolyArrs lists but no longer holds.
 
 ## [1.0.0] - 2026-11-26
 
